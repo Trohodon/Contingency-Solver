@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -159,6 +161,9 @@ class SimAutoClient:
             LOGGER.info("Connection test log command failed; treating COM dispatch as connected.")
         return "Connected"
 
+    def run_script_command(self, command: str) -> None:
+        self.call("RunScriptCommand", command)
+
     def get_field_list(self, object_type: str) -> set[str]:
         response = self.call("GetFieldList", object_type)
         fields = _flatten_strings(response.payload)
@@ -180,6 +185,22 @@ class SimAutoClient:
             _summarize(response.raw),
         )
         return response
+
+    def export_rows_csv(self, object_type: str, fields: list[str]) -> list[dict[str, Any]]:
+        with tempfile.NamedTemporaryFile(prefix=f"contingency_solver_{object_type}_", suffix=".csv", delete=False) as handle:
+            csv_path = Path(handle.name)
+        clean_path = str(csv_path).replace("\\", "/")
+        field_text = ", ".join(fields)
+        command = f'SaveData("{clean_path}", CSV, {object_type}, [ALL], [{field_text}], "");'
+        LOGGER.info("Exporting PowerWorld object via SaveData: %s", command)
+        try:
+            self.run_script_command(command)
+            return records_from_powerworld_csv(csv_path)
+        finally:
+            try:
+                csv_path.unlink(missing_ok=True)
+            except Exception:
+                LOGGER.warning("Could not remove temporary PowerWorld export %s.", csv_path)
 
 
 class PowerWorldReader:
@@ -206,13 +227,20 @@ class PowerWorldReader:
         field_values = list(fields.values())
         response = self._get_rows_response(object_type, field_values)
         rows = records_from_response(field_values, response.payload)
+        raw_summary = _summarize(response.raw)
+        if not rows and hasattr(self.client, "export_rows_csv"):
+            try:
+                rows = self.client.export_rows_csv(object_type, field_values)
+                raw_summary += f"; csv_fallback_rows={len(rows)}"
+            except Exception as exc:
+                raw_summary += f"; csv_fallback_error={exc}"
         attempt = QueryAttempt(
             object_type=object_type,
             filter_name="",
             field_count=len(field_values),
             row_count=len(rows),
             fields=tuple(field_values),
-            raw_summary=_summarize(response.raw),
+            raw_summary=raw_summary,
         )
         return [_bus_from_row(row, fields) for row in rows], attempt
 
@@ -224,13 +252,20 @@ class PowerWorldReader:
         field_values = list(fields.values())
         response = self._get_rows_response(object_type, field_values)
         rows = records_from_response(field_values, response.payload)
+        raw_summary = _summarize(response.raw)
+        if not rows and hasattr(self.client, "export_rows_csv"):
+            try:
+                rows = self.client.export_rows_csv(object_type, field_values)
+                raw_summary += f"; csv_fallback_rows={len(rows)}"
+            except Exception as exc:
+                raw_summary += f"; csv_fallback_error={exc}"
         attempt = QueryAttempt(
             object_type=object_type,
             filter_name="",
             field_count=len(field_values),
             row_count=len(rows),
             fields=tuple(field_values),
-            raw_summary=_summarize(response.raw),
+            raw_summary=raw_summary,
         )
         return [_branch_from_row(row, fields) for row in rows], attempt
 
@@ -255,6 +290,15 @@ class PowerWorldReader:
                 try:
                     response = self._get_rows_response(object_type, field_values, filter_name)
                     rows = records_from_response(field_values, response.payload)
+                    raw_summary = _summarize(response.raw)
+                    if not rows and hasattr(self.client, "export_rows_csv"):
+                        try:
+                            if object_type.lower() == "contingency":
+                                self.client.run_script_command("EnterMode(Contingency);")
+                            rows = self.client.export_rows_csv(object_type, field_values)
+                            raw_summary += f"; csv_fallback_rows={len(rows)}"
+                        except Exception as exc:
+                            raw_summary += f"; csv_fallback_error={exc}"
                 except Exception as exc:
                     attempts.append(
                         QueryAttempt(
@@ -273,7 +317,7 @@ class PowerWorldReader:
                         field_count=len(field_values),
                         row_count=len(rows),
                         fields=tuple(field_values),
-                        raw_summary=_summarize(response.raw),
+                        raw_summary=raw_summary,
                     )
                 )
                 if rows:
@@ -321,6 +365,23 @@ def records_from_response(fields: list[str], payload: tuple[Any, ...]) -> list[d
         column_lengths = {len(column) for column in rows}
         if len(column_lengths) == 1:
             return [dict(zip(fields, values, strict=True)) for values in zip(*rows, strict=True)]
+    return records
+
+
+def records_from_powerworld_csv(path: Path) -> list[dict[str, Any]]:
+    with path.open("r", newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.reader(handle))
+    rows = [[cell.strip() for cell in row] for row in rows if any(cell.strip() for cell in row)]
+    if not rows:
+        return []
+    header_index = 0
+    if len(rows) >= 2 and len(rows[0]) <= 1:
+        header_index = 1
+    headers = [header for header in rows[header_index] if header]
+    records: list[dict[str, Any]] = []
+    for row in rows[header_index + 1 :]:
+        padded = row + [""] * max(0, len(headers) - len(row))
+        records.append(dict(zip(headers, padded[: len(headers)], strict=True)))
     return records
 
 
