@@ -109,6 +109,8 @@ class ThermalViolation:
     mva: float
     rating_mva: float
     percent_loading: float
+    contingency: str = ""
+    category: str = ""
 
 
 @dataclass(frozen=True)
