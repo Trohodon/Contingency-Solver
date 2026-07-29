@@ -65,6 +65,7 @@ class ContingencySolverApp(tk.Tk):
         self.minsize(1080, 720)
 
         self.settings = load_settings()
+        self.thermal_results_min_loading_pct = float(self.settings.get("thermal_results_min_loading_pct", 90.0))
         self.system_mva_base, self.voltage_tolerance_kv, self.conductors = load_conductors()
         self.powerworld = PowerWorldReader()
         self.real_case_loaded = False
@@ -195,8 +196,8 @@ class ContingencySolverApp(tk.Tk):
         self.ctg_tree = self._tree(page, ("Name", "Category", "Skip", "Solved", "Actions"))
 
     def _build_baseline_page(self, page: ttk.Frame) -> None:
-        self._title(page, "Baseline Results", "Line/transformer overload results from PowerWorld ViolationCTG, sorted by percent loading.")
-        self.baseline_status_var = tk.StringVar(value="Status: mock contingency solved with thermal overloads.")
+        self._title(page, "Baseline Results", "Line/transformer thermal loading results from PowerWorld ViolationCTG, sorted by percent loading.")
+        self.baseline_status_var = tk.StringVar(value="Status: mock contingency solved with thermal loading results.")
         ttk.Label(page, textvariable=self.baseline_status_var, style="Status.TLabel").pack(anchor="w", pady=(0, 6))
         self.baseline_tree = self._tree(page, ("Contingency", "Line/Transformer", "Category", "Limit", "Value", "% Loading"), height=12)
         ttk.Label(page, text="Voltage Violations are de-prioritized for now.").pack(anchor="w", pady=(10, 4))
@@ -259,6 +260,12 @@ class ContingencySolverApp(tk.Tk):
 
     def _build_settings_page(self, page: ttk.Frame) -> None:
         self._title(page, "Settings", "Non-sensitive settings are persisted under user_data.")
+        top = ttk.LabelFrame(page, text="Result Filters")
+        top.pack(fill="x", pady=(0, 8))
+        self.thermal_threshold_var = tk.DoubleVar(value=self.thermal_results_min_loading_pct)
+        ttk.Label(top, text="Minimum line/transformer loading %").grid(row=0, column=0, sticky="w", padx=8, pady=6)
+        ttk.Entry(top, textvariable=self.thermal_threshold_var, width=10).grid(row=0, column=1, sticky="w", padx=8, pady=6)
+        ttk.Button(top, text="Save Settings", command=self.save_settings_from_ui).grid(row=0, column=2, sticky="w", padx=8, pady=6)
         self.settings_text = tk.Text(page, wrap="word")
         self.settings_text.pack(fill="both", expand=True)
 
@@ -333,7 +340,9 @@ class ContingencySolverApp(tk.Tk):
         self._set_tree_rows(self.ctg_tree, rows)
 
     def _fill_baseline(self) -> None:
-        self.baseline_status_var.set(f"Line/transformer overload rows: {len(self.baseline_overloads)}")
+        self.baseline_status_var.set(
+            f"Line/transformer rows at or above {self.thermal_results_min_loading_pct:.1f}%: {len(self.baseline_overloads)}"
+        )
         self._set_tree_rows(
             self.baseline_tree,
             [
@@ -410,7 +419,9 @@ class ContingencySolverApp(tk.Tk):
             self.buses, bus_attempt = self.powerworld.read_buses_with_diagnostics()
             self.branches, branch_attempt = self.powerworld.read_branches_with_diagnostics()
             self.contingencies, ctg_attempts = self.powerworld.read_contingencies_with_diagnostics()
-            self.baseline_overloads, violation_attempts = self.powerworld.read_thermal_violations_with_diagnostics()
+            self.baseline_overloads, violation_attempts = self.powerworld.read_thermal_violations_with_diagnostics(
+                self.thermal_results_min_loading_pct
+            )
             self.voltage_violations = []
         except (SimAutoUnavailableError, SimAutoCommandError, SchemaResolutionError, ValueError) as exc:
             LOGGER.exception("PowerWorld case load failed.")
@@ -449,6 +460,23 @@ class ContingencySolverApp(tk.Tk):
         self.candidate_var.set("Candidates: 0")
         self.case_summary_message = "Mock data loaded."
         self._refresh_all()
+
+    def save_settings_from_ui(self) -> None:
+        try:
+            threshold = float(self.thermal_threshold_var.get())
+        except tk.TclError:
+            messagebox.showerror(APP_NAME, "Minimum loading percent must be a number.")
+            return
+        if threshold < 0 or threshold > 200:
+            messagebox.showerror(APP_NAME, "Minimum loading percent must be between 0 and 200.")
+            return
+        self.thermal_results_min_loading_pct = threshold
+        self.settings["thermal_results_min_loading_pct"] = threshold
+        from contingency_solver.storage import save_settings
+
+        save_settings(self.settings)
+        self._fill_settings()
+        messagebox.showinfo(APP_NAME, "Settings saved. Reload the PowerWorld case to apply the result threshold.")
 
     def generate_candidate_preview(self) -> None:
         voltage_text = self.voltage_filter_var.get()
@@ -546,9 +574,9 @@ class ContingencySolverApp(tk.Tk):
             f"Bus count: {len(self.buses)}",
             f"Branch count: {len(self.branches)}",
             f"Contingency definition count: {len(self.contingencies)}",
-            f"Line/transformer overload result count: {len(self.baseline_overloads)}",
+            f"Line/transformer result count at or above {self.thermal_results_min_loading_pct:.1f}%: {len(self.baseline_overloads)}",
             "",
-            "Baseline execution is not implemented yet; current overloads are read from saved ViolationCTG results in the case.",
+            "Baseline execution is not implemented yet; current thermal loading rows are read from saved ViolationCTG results in the case.",
             "",
             "Bus query:",
             self._format_attempt(bus_attempt),
