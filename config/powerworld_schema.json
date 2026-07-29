@@ -33,7 +33,7 @@
     "contingency": {
       "object_type": "Contingency",
       "object_type_alternatives": ["Contingency", "CTG", "ContingencyDefinition"],
-      "query_filters": ["", "ALL"],
+      "query_filters": [""],
       "fields": {
         "name": ["CTGLabel", "CTGName", "Name", "Label"],
         "category": ["Category", "CTGCategory"],
