@@ -1,0 +1,48 @@
+{
+  "phase": "Phase 2 schema-controlled field mapping",
+  "note": "Alternative field names are configured here. The adapter resolves names against the fields reported by the installed PowerWorld version before reading data.",
+  "objects": {
+    "bus": {
+      "object_type": "Bus",
+      "fields": {
+        "number": ["BusNum", "Number"],
+        "name": ["BusName", "Name"],
+        "nominal_kv": ["BusNomVolt", "NomkV"],
+        "latitude": ["Latitude", "BusLat"],
+        "longitude": ["Longitude", "BusLon"],
+        "status": ["Status"],
+        "area": ["AreaNum", "AreaName"],
+        "zone": ["ZoneNum", "ZoneName"],
+        "owner": ["OwnerNum", "OwnerName"],
+        "substation": ["SubName", "Substation"]
+      }
+    },
+    "branch": {
+      "object_type": "Branch",
+      "fields": {
+        "from_bus": ["BusNum", "FromBus"],
+        "to_bus": ["BusNum:1", "ToBus"],
+        "circuit": ["LineCircuit", "Circuit"],
+        "status": ["Status"],
+        "nominal_kv": ["NomkV", "BusNomVolt", "LineNomVolt"],
+        "mva": ["MVA"],
+        "rate_a": ["LineLimMVA", "RateA"],
+        "percent_loading": ["Percent", "PctLoading"]
+      }
+    },
+    "contingency": {
+      "object_type": "Contingency",
+      "fields": {
+        "name": ["CTGLabel", "Name"],
+        "category": ["Category"],
+        "skip": ["Skip"],
+        "solved": ["Solved", "CTGSolved"],
+        "action_count": ["NumActions"]
+      }
+    }
+  },
+  "script_commands": {
+    "solve_power_flow": "SolvePowerFlow(RECTNEWT)",
+    "run_contingency": "CTGRun(\"{contingency_name}\")"
+  }
+}

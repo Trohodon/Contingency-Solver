@@ -1,0 +1,34 @@
+{
+  "system_mva_base": 100.0,
+  "voltage_tolerance_kv": 1.0,
+  "line_models": {
+    "115": {
+      "name": "115 kV 1272 ACSR",
+      "nominal_kv": 115.0,
+      "bundle_count": 1,
+      "resistance_ohm_per_mile": 0.08,
+      "reactance_ohm_per_mile": 0.42,
+      "charging_input_type": "susceptance_per_mile",
+      "charging_value_per_mile": 0.0000032,
+      "rate_a_mva": 180.0,
+      "rate_b_mva": 220.0,
+      "rate_c_mva": 260.0,
+      "circuit_count": 1,
+      "notes": "Mock default. Replace with utility-approved values before real screening."
+    },
+    "230": {
+      "name": "230 kV Bundled 1272 ACSR",
+      "nominal_kv": 230.0,
+      "bundle_count": 2,
+      "resistance_ohm_per_mile": 0.04,
+      "reactance_ohm_per_mile": 0.31,
+      "charging_input_type": "susceptance_per_mile",
+      "charging_value_per_mile": 0.000005,
+      "rate_a_mva": 450.0,
+      "rate_b_mva": 550.0,
+      "rate_c_mva": 650.0,
+      "circuit_count": 1,
+      "notes": "Mock default. User-entered values are required for engineering use."
+    }
+  }
+}
