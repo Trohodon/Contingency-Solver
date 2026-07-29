@@ -21,7 +21,7 @@ class FakeClient:
     def get_field_list(self, object_type: str) -> set[str]:
         return self.available[object_type]
 
-    def get_rows(self, object_type: str, fields: list[str]) -> list[dict[str, Any]]:
+    def get_rows(self, object_type: str, fields: list[str], filter_name: str = "") -> list[dict[str, Any]]:
         return [{field: row[field] for field in fields} for row in self.rows[object_type]]
 
 
