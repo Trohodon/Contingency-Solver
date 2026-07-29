@@ -41,6 +41,19 @@
         "solved": ["Solved", "CTGSolved"],
         "action_count": ["NumActions", "ActionCount", "NumElements"]
       }
+    },
+    "violation_ctg": {
+      "object_type": "ViolationCTG",
+      "object_type_alternatives": ["ViolationCTG"],
+      "query_filters": [""],
+      "fields": {
+        "contingency": ["CTGLabel", "CTGName", "Contingency"],
+        "violation_id": ["LimViolID", "Violation", "ResultingIssue"],
+        "limit": ["LimViolLimit", "Limit"],
+        "value": ["LimViolValue", "Value"],
+        "percent": ["LimViolPct", "Percent", "Pct"],
+        "category": ["LimViolCat", "Category"]
+      }
     }
   },
   "script_commands": {
