@@ -32,12 +32,14 @@
     },
     "contingency": {
       "object_type": "Contingency",
+      "object_type_alternatives": ["Contingency", "CTG", "ContingencyDefinition"],
+      "query_filters": ["", "ALL"],
       "fields": {
-        "name": ["CTGLabel", "Name"],
-        "category": ["Category"],
+        "name": ["CTGLabel", "CTGName", "Name", "Label"],
+        "category": ["Category", "CTGCategory"],
         "skip": ["Skip"],
         "solved": ["Solved", "CTGSolved"],
-        "action_count": ["NumActions"]
+        "action_count": ["NumActions", "ActionCount", "NumElements"]
       }
     }
   },
