@@ -188,17 +188,18 @@ class ContingencySolverApp(tk.Tk):
         self.case_summary.pack(fill="both", expand=True, pady=(8, 0))
 
     def _build_contingencies_page(self, page: ttk.Frame) -> None:
-        self._title(page, "Contingencies", "Searchable contingency list. Phase 3 will add real baseline execution.")
+        self._title(page, "Contingencies", "Contingency definitions. The overload results you want are on Baseline Results.")
         self.ctg_search_var = tk.StringVar()
         self.ctg_search_var.trace_add("write", lambda *_: self._fill_contingencies())
         ttk.Entry(page, textvariable=self.ctg_search_var).pack(fill="x", pady=(0, 6))
         self.ctg_tree = self._tree(page, ("Name", "Category", "Skip", "Solved", "Actions"))
 
     def _build_baseline_page(self, page: ttk.Frame) -> None:
-        self._title(page, "Baseline Results", "Mock baseline overloads remain until Phase 3 implements selected-contingency execution.")
-        ttk.Label(page, text="Status: mock contingency solved with thermal overloads.", style="Status.TLabel").pack(anchor="w", pady=(0, 6))
-        self.baseline_tree = self._tree(page, ("Branch", "From", "To", "Circuit", "MVA", "Rating", "% Loading"), height=8)
-        ttk.Label(page, text="Voltage Violations").pack(anchor="w", pady=(10, 4))
+        self._title(page, "Baseline Results", "Line/transformer overload results from PowerWorld ViolationCTG, sorted by percent loading.")
+        self.baseline_status_var = tk.StringVar(value="Status: mock contingency solved with thermal overloads.")
+        ttk.Label(page, textvariable=self.baseline_status_var, style="Status.TLabel").pack(anchor="w", pady=(0, 6))
+        self.baseline_tree = self._tree(page, ("Contingency", "Line/Transformer", "Category", "Limit", "Value", "% Loading"), height=12)
+        ttk.Label(page, text="Voltage Violations are de-prioritized for now.").pack(anchor="w", pady=(10, 4))
         self.voltage_tree = self._tree(page, ("Bus", "Name", "Voltage pu", "Limit pu", "Type"), height=6)
 
     def _build_candidate_page(self, page: ttk.Frame) -> None:
@@ -332,7 +333,21 @@ class ContingencySolverApp(tk.Tk):
         self._set_tree_rows(self.ctg_tree, rows)
 
     def _fill_baseline(self) -> None:
-        self._set_tree_rows(self.baseline_tree, [(v.branch_key, v.from_bus, v.to_bus, v.circuit_id, v.mva, v.rating_mva, v.percent_loading) for v in self.baseline_overloads])
+        self.baseline_status_var.set(f"Line/transformer overload rows: {len(self.baseline_overloads)}")
+        self._set_tree_rows(
+            self.baseline_tree,
+            [
+                (
+                    v.contingency,
+                    v.branch_key,
+                    v.category,
+                    f"{v.rating_mva:.2f}",
+                    f"{v.mva:.2f}",
+                    f"{v.percent_loading:.2f}",
+                )
+                for v in self.baseline_overloads
+            ],
+        )
         self._set_tree_rows(self.voltage_tree, [(v.bus_number, v.bus_name, v.voltage_pu, v.limit_pu, v.violation_type) for v in self.voltage_violations])
 
     def _fill_conductors(self) -> None:
@@ -395,6 +410,8 @@ class ContingencySolverApp(tk.Tk):
             self.buses, bus_attempt = self.powerworld.read_buses_with_diagnostics()
             self.branches, branch_attempt = self.powerworld.read_branches_with_diagnostics()
             self.contingencies, ctg_attempts = self.powerworld.read_contingencies_with_diagnostics()
+            self.baseline_overloads, violation_attempts = self.powerworld.read_thermal_violations_with_diagnostics()
+            self.voltage_violations = []
         except (SimAutoUnavailableError, SimAutoCommandError, SchemaResolutionError, ValueError) as exc:
             LOGGER.exception("PowerWorld case load failed.")
             messagebox.showerror(APP_NAME, self._readable_error(exc))
@@ -405,12 +422,12 @@ class ContingencySolverApp(tk.Tk):
         self.results = []
         self.case_var.set(f"Case: {path.name}")
         self.connection_var.set("PowerWorld: connected")
-        self.case_summary_message = self._case_load_summary(path, bus_attempt, branch_attempt, ctg_attempts)
+        self.case_summary_message = self._case_load_summary(path, bus_attempt, branch_attempt, ctg_attempts, violation_attempts)
         self._refresh_all()
-        if not self.buses or not self.branches or not self.contingencies:
+        if not self.buses or not self.branches or not self.baseline_overloads:
             messagebox.showwarning(
                 APP_NAME,
-                "The case loaded, but one or more PowerWorld tables returned zero rows. "
+                "The case loaded, but one or more key PowerWorld tables returned zero rows. "
                 "Open Case Setup to view the query diagnostics.",
             )
 
@@ -515,29 +532,49 @@ class ContingencySolverApp(tk.Tk):
             return f"PowerWorld operation failed.\n\nOperation: {exc.operation}\nRaw SimAuto error: {exc.raw_error}"
         return str(exc)
 
-    def _case_load_summary(self, path: Path, bus_attempt: object, branch_attempt: object, ctg_attempts: list[object]) -> str:
+    def _case_load_summary(
+        self,
+        path: Path,
+        bus_attempt: object,
+        branch_attempt: object,
+        ctg_attempts: list[object],
+        violation_attempts: list[object],
+    ) -> str:
         lines = [
             f"Real PowerWorld data loaded from: {path}",
             "",
             f"Bus count: {len(self.buses)}",
             f"Branch count: {len(self.branches)}",
-            f"Contingency count: {len(self.contingencies)}",
+            f"Contingency definition count: {len(self.contingencies)}",
+            f"Line/transformer overload result count: {len(self.baseline_overloads)}",
             "",
-            "Baseline execution is not implemented yet.",
+            "Baseline execution is not implemented yet; current overloads are read from saved ViolationCTG results in the case.",
             "",
             "Bus query:",
             self._format_attempt(bus_attempt),
             "",
             "Branch query:",
             self._format_attempt(branch_attempt),
+            "",
+            "ViolationCTG line/transformer result attempts:",
+            "object type | filter | fields | rows | raw | error",
         ]
-        if self.contingencies and self.buses and self.branches:
+        for attempt in violation_attempts:
+            object_type = getattr(attempt, "object_type", "")
+            filter_name = getattr(attempt, "filter_name", "")
+            fields = ", ".join(getattr(attempt, "fields", ()))
+            row_count = getattr(attempt, "row_count", 0)
+            raw_summary = getattr(attempt, "raw_summary", "")
+            error = getattr(attempt, "error", "")
+            lines.append(f"{object_type!r} | {filter_name!r} | {fields or '-'} | {row_count} | {raw_summary or '-'} | {error or '-'}")
+
+        if self.baseline_overloads and self.buses and self.branches:
             return "\n".join(lines)
 
         lines.extend(
             [
                 "",
-                "No contingencies were read. Diagnostic attempts:",
+                "Contingency definition attempts:",
                 "object type | filter | fields | rows | raw | error",
             ]
         )
