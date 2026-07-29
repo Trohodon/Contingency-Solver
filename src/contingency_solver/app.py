@@ -392,8 +392,8 @@ class ContingencySolverApp(tk.Tk):
             return
         try:
             self.powerworld.open_case(path)
-            self.buses = self.powerworld.read_buses()
-            self.branches = self.powerworld.read_branches()
+            self.buses, bus_attempt = self.powerworld.read_buses_with_diagnostics()
+            self.branches, branch_attempt = self.powerworld.read_branches_with_diagnostics()
             self.contingencies, ctg_attempts = self.powerworld.read_contingencies_with_diagnostics()
         except (SimAutoUnavailableError, SimAutoCommandError, SchemaResolutionError, ValueError) as exc:
             LOGGER.exception("PowerWorld case load failed.")
@@ -405,13 +405,13 @@ class ContingencySolverApp(tk.Tk):
         self.results = []
         self.case_var.set(f"Case: {path.name}")
         self.connection_var.set("PowerWorld: connected")
-        self.case_summary_message = self._case_load_summary(path, ctg_attempts)
+        self.case_summary_message = self._case_load_summary(path, bus_attempt, branch_attempt, ctg_attempts)
         self._refresh_all()
-        if not self.contingencies:
+        if not self.buses or not self.branches or not self.contingencies:
             messagebox.showwarning(
                 APP_NAME,
-                "The case loaded, but no contingencies were read. "
-                "Open Case Setup to view the contingency query diagnostics.",
+                "The case loaded, but one or more PowerWorld tables returned zero rows. "
+                "Open Case Setup to view the query diagnostics.",
             )
 
     def reload_mock_data(self) -> None:
@@ -515,7 +515,7 @@ class ContingencySolverApp(tk.Tk):
             return f"PowerWorld operation failed.\n\nOperation: {exc.operation}\nRaw SimAuto error: {exc.raw_error}"
         return str(exc)
 
-    def _case_load_summary(self, path: Path, ctg_attempts: list[object]) -> str:
+    def _case_load_summary(self, path: Path, bus_attempt: object, branch_attempt: object, ctg_attempts: list[object]) -> str:
         lines = [
             f"Real PowerWorld data loaded from: {path}",
             "",
@@ -524,15 +524,21 @@ class ContingencySolverApp(tk.Tk):
             f"Contingency count: {len(self.contingencies)}",
             "",
             "Baseline execution is not implemented yet.",
+            "",
+            "Bus query:",
+            self._format_attempt(bus_attempt),
+            "",
+            "Branch query:",
+            self._format_attempt(branch_attempt),
         ]
-        if self.contingencies:
+        if self.contingencies and self.buses and self.branches:
             return "\n".join(lines)
 
         lines.extend(
             [
                 "",
                 "No contingencies were read. Diagnostic attempts:",
-                "object type | filter | fields | rows | error",
+                "object type | filter | fields | rows | raw | error",
             ]
         )
         for attempt in ctg_attempts:
@@ -540,11 +546,24 @@ class ContingencySolverApp(tk.Tk):
             filter_name = getattr(attempt, "filter_name", "")
             fields = ", ".join(getattr(attempt, "fields", ()))
             row_count = getattr(attempt, "row_count", 0)
+            raw_summary = getattr(attempt, "raw_summary", "")
             error = getattr(attempt, "error", "")
-            lines.append(f"{object_type!r} | {filter_name!r} | {fields or '-'} | {row_count} | {error or '-'}")
+            lines.append(f"{object_type!r} | {filter_name!r} | {fields or '-'} | {row_count} | {raw_summary or '-'} | {error or '-'}")
         lines.append("")
         lines.append("Send this diagnostic text back so the schema can be adjusted without guessing.")
         return "\n".join(lines)
+
+    def _format_attempt(self, attempt: object) -> str:
+        object_type = getattr(attempt, "object_type", "")
+        filter_name = getattr(attempt, "filter_name", "")
+        fields = ", ".join(getattr(attempt, "fields", ()))
+        row_count = getattr(attempt, "row_count", 0)
+        raw_summary = getattr(attempt, "raw_summary", "")
+        error = getattr(attempt, "error", "")
+        return (
+            f"object={object_type!r} filter={filter_name!r} fields={fields or '-'} "
+            f"rows={row_count} raw={raw_summary or '-'} error={error or '-'}"
+        )
 
 
 def _empty_result() -> CandidateResult:
