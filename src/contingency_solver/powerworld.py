@@ -334,7 +334,7 @@ class PowerWorldReader:
                         return contingencies, attempts
         return [], attempts
 
-    def read_thermal_violations_with_diagnostics(self) -> tuple[list[ThermalViolation], list[QueryAttempt]]:
+    def read_thermal_violations_with_diagnostics(self, minimum_loading_pct: float = 100.0) -> tuple[list[ThermalViolation], list[QueryAttempt]]:
         attempts: list[QueryAttempt] = []
         try:
             self.client.run_script_command("EnterMode(Contingency);")
@@ -379,7 +379,7 @@ class PowerWorldReader:
                     continue
 
                 violations = [_thermal_violation_from_row(row, fields) for row in rows]
-                violations = [item for item in violations if _is_line_or_transformer_overload(item)]
+                violations = [item for item in violations if _is_line_or_transformer_loading_result(item, minimum_loading_pct)]
                 violations.sort(key=lambda item: item.percent_loading, reverse=True)
                 attempts.append(
                     QueryAttempt(
@@ -392,7 +392,11 @@ class PowerWorldReader:
                     )
                 )
                 if violations:
-                    LOGGER.info("Read %s line/transformer overload rows from ViolationCTG.", len(violations))
+                    LOGGER.info(
+                        "Read %s line/transformer thermal rows from ViolationCTG at or above %.2f%%.",
+                        len(violations),
+                        minimum_loading_pct,
+                    )
                     return violations, attempts
         return [], attempts
 
@@ -540,8 +544,8 @@ def _thermal_violation_from_row(row: dict[str, Any], fields: dict[str, str]) -> 
     )
 
 
-def _is_line_or_transformer_overload(item: ThermalViolation) -> bool:
-    if item.percent_loading <= 100.0:
+def _is_line_or_transformer_loading_result(item: ThermalViolation, minimum_loading_pct: float) -> bool:
+    if item.percent_loading < minimum_loading_pct:
         return False
     text = f"{item.branch_key} {item.category}".lower()
     excluded_terms = ("volt", "voltage", "interface", "bus pair angle", "dv/dq", "mvar")
