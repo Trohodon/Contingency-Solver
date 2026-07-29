@@ -135,9 +135,18 @@ def test_reader_maps_powerworld_rows() -> None:
 
 def test_reader_maps_violation_ctg_line_transformer_overloads() -> None:
     reader = PowerWorldReader(FakeClient(), schema())  # type: ignore[arg-type]
-    violations, attempts = reader.read_thermal_violations_with_diagnostics()
+    violations, attempts = reader.read_thermal_violations_with_diagnostics(90.0)
     assert attempts
     assert len(violations) == 1
     assert violations[0].contingency == "CTG_A"
     assert violations[0].branch_key == "Line 101-102 1"
     assert violations[0].percent_loading == 125
+
+
+def test_reader_keeps_near_overloads_when_threshold_is_90() -> None:
+    fake = FakeClient()
+    fake.rows["ViolationCTG"][0]["LimViolPct"] = "96.5"
+    reader = PowerWorldReader(fake, schema())  # type: ignore[arg-type]
+    violations, _attempts = reader.read_thermal_violations_with_diagnostics(90.0)
+    assert len(violations) == 1
+    assert violations[0].percent_loading == 96.5
