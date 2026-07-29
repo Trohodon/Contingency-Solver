@@ -1,8 +1,15 @@
 from typing import Any
+from pathlib import Path
 
 import pytest
 
-from contingency_solver.powerworld import PowerWorldReader, PowerWorldSchema, SchemaResolutionError, records_from_response
+from contingency_solver.powerworld import (
+    PowerWorldReader,
+    PowerWorldSchema,
+    SchemaResolutionError,
+    records_from_powerworld_csv,
+    records_from_response,
+)
 
 
 class FakeClient:
@@ -77,6 +84,13 @@ def test_schema_resolution() -> None:
 
 def test_records_from_response() -> None:
     assert records_from_response(["BusNum", "BusName"], (((1, "A"), (2, "B")),))[1]["BusName"] == "B"
+
+
+def test_records_from_powerworld_csv(tmp_path: Path) -> None:
+    path = tmp_path / "bus.csv"
+    path.write_text("Bus\nBusNum,BusName\n101,A\n102,B\n", encoding="utf-8")
+    records = records_from_powerworld_csv(path)
+    assert records == [{"BusNum": "101", "BusName": "A"}, {"BusNum": "102", "BusName": "B"}]
 
 
 def test_reader_maps_powerworld_rows() -> None:
