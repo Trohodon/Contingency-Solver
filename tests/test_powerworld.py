@@ -18,7 +18,7 @@ class FakeClient:
             "Bus": {"BusNum", "BusName", "BusNomVolt", "Latitude", "Longitude", "Status"},
             "Branch": {"BusNum", "BusNum:1", "LineCircuit", "Status"},
             "Contingency": {"CTGLabel", "Category", "Skip", "Solved", "NumActions"},
-            "ViolationCTG": {"CTGLabel", "LimViolID", "LimViolLimit", "LimViolValue", "LimViolPct", "LimViolCat"},
+            "ViolationCTG": {"CTGLabel", "LimViolID", "LimViolLimit", "LimViolValue", "LimViolPct", "LimViolCalc"},
         }
         self.rows = {
             "Bus": [{"BusNum": "101", "BusName": "A", "BusNomVolt": "115", "Latitude": "40", "Longitude": "-82", "Status": "Closed"}],
@@ -30,16 +30,16 @@ class FakeClient:
                     "LimViolID": "Line 101-102 1",
                     "LimViolLimit": "100",
                     "LimViolValue": "125",
-                    "LimViolPct": "125",
-                    "LimViolCat": "Line/Transformer",
+                    "LimViolPct": "125%",
+                    "LimViolCalc": "Limit Monitoring",
                 },
                 {
                     "CTGLabel": "CTG_B",
                     "LimViolID": "Bus 55 low voltage",
                     "LimViolLimit": "0.95",
                     "LimViolValue": "0.92",
-                    "LimViolPct": "0",
-                    "LimViolCat": "Bus Voltage",
+                    "LimViolPct": "130",
+                    "LimViolCalc": "Voltage",
                 },
             ],
         }
