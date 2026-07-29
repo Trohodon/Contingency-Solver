@@ -77,6 +77,7 @@ class ContingencySolverApp(tk.Tk):
         self.selected_branch = self.branches[1]
         self.candidates: list[CandidateLine] = []
         self.results: list[CandidateResult] = []
+        self.case_summary_message = "Mock data loaded."
 
         self._configure_style()
         self._build_layout()
@@ -318,7 +319,7 @@ class ContingencySolverApp(tk.Tk):
         self.coordinate_var.set(f"{coords} of {len(self.buses)} buses have valid coordinates")
         self._replace_text(
             self.case_summary,
-            "Mock data loaded." if not self.real_case_loaded else "Real PowerWorld data loaded. Baseline execution is not implemented yet.",
+            self.case_summary_message,
         )
 
     def _fill_contingencies(self) -> None:
@@ -393,7 +394,7 @@ class ContingencySolverApp(tk.Tk):
             self.powerworld.open_case(path)
             self.buses = self.powerworld.read_buses()
             self.branches = self.powerworld.read_branches()
-            self.contingencies = self.powerworld.read_contingencies()
+            self.contingencies, ctg_attempts = self.powerworld.read_contingencies_with_diagnostics()
         except (SimAutoUnavailableError, SimAutoCommandError, SchemaResolutionError, ValueError) as exc:
             LOGGER.exception("PowerWorld case load failed.")
             messagebox.showerror(APP_NAME, self._readable_error(exc))
@@ -404,7 +405,14 @@ class ContingencySolverApp(tk.Tk):
         self.results = []
         self.case_var.set(f"Case: {path.name}")
         self.connection_var.set("PowerWorld: connected")
+        self.case_summary_message = self._case_load_summary(path, ctg_attempts)
         self._refresh_all()
+        if not self.contingencies:
+            messagebox.showwarning(
+                APP_NAME,
+                "The case loaded, but no contingencies were read. "
+                "Open Case Setup to view the contingency query diagnostics.",
+            )
 
     def reload_mock_data(self) -> None:
         self.buses = mock_buses()
@@ -422,6 +430,7 @@ class ContingencySolverApp(tk.Tk):
         self.connection_var.set("PowerWorld: mock")
         self.case_var.set("Case: Mock sample case")
         self.candidate_var.set("Candidates: 0")
+        self.case_summary_message = "Mock data loaded."
         self._refresh_all()
 
     def generate_candidate_preview(self) -> None:
@@ -505,6 +514,37 @@ class ContingencySolverApp(tk.Tk):
         if isinstance(exc, SimAutoCommandError):
             return f"PowerWorld operation failed.\n\nOperation: {exc.operation}\nRaw SimAuto error: {exc.raw_error}"
         return str(exc)
+
+    def _case_load_summary(self, path: Path, ctg_attempts: list[object]) -> str:
+        lines = [
+            f"Real PowerWorld data loaded from: {path}",
+            "",
+            f"Bus count: {len(self.buses)}",
+            f"Branch count: {len(self.branches)}",
+            f"Contingency count: {len(self.contingencies)}",
+            "",
+            "Baseline execution is not implemented yet.",
+        ]
+        if self.contingencies:
+            return "\n".join(lines)
+
+        lines.extend(
+            [
+                "",
+                "No contingencies were read. Diagnostic attempts:",
+                "object type | filter | fields | rows | error",
+            ]
+        )
+        for attempt in ctg_attempts:
+            object_type = getattr(attempt, "object_type", "")
+            filter_name = getattr(attempt, "filter_name", "")
+            fields = ", ".join(getattr(attempt, "fields", ()))
+            row_count = getattr(attempt, "row_count", 0)
+            error = getattr(attempt, "error", "")
+            lines.append(f"{object_type!r} | {filter_name!r} | {fields or '-'} | {row_count} | {error or '-'}")
+        lines.append("")
+        lines.append("Send this diagnostic text back so the schema can be adjusted without guessing.")
+        return "\n".join(lines)
 
 
 def _empty_result() -> CandidateResult:
