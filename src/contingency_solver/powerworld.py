@@ -345,7 +345,10 @@ class PowerWorldReader:
             try:
                 available = self.client.get_field_list(object_type)
                 fields = self.schema.resolve_required("violation_ctg", ["contingency", "violation_id", "value", "percent"], available)
-                fields.update(self.schema.resolve_optional("violation_ctg", ["limit", "category"], available))
+                fields.update(self.schema.resolve_optional("violation_ctg", ["limit"], available))
+                category = self._resolve_violation_category_field(available)
+                if category is not None:
+                    fields["category"] = category
             except Exception as exc:
                 attempts.append(QueryAttempt(object_type=object_type, filter_name="", error=str(exc)))
                 # SaveData can still work when GetFieldList is touchy, so try canonical configured names.
@@ -402,6 +405,13 @@ class PowerWorldReader:
             "percent": self.schema.alternatives("violation_ctg", "percent")[0],
             "category": self.schema.alternatives("violation_ctg", "category")[0],
         }
+
+    def _resolve_violation_category_field(self, available: set[str]) -> str | None:
+        lookup = {field.lower(): field for field in available}
+        for candidate in ("LimViolCat", "Category"):
+            if candidate.lower() in lookup:
+                return lookup[candidate.lower()]
+        return None
 
     def _get_rows_response(self, object_type: str, fields: list[str], filter_name: str = "") -> SimAutoResponse:
         if hasattr(self.client, "get_rows_response"):
@@ -533,10 +543,9 @@ def _thermal_violation_from_row(row: dict[str, Any], fields: dict[str, str]) -> 
 def _is_line_or_transformer_overload(item: ThermalViolation) -> bool:
     if item.percent_loading <= 100.0:
         return False
-    category = item.category.lower()
-    if not category:
-        return True
-    return any(token in category for token in ("line", "transformer", "xfmr", "branch"))
+    text = f"{item.branch_key} {item.category}".lower()
+    excluded_terms = ("volt", "voltage", "interface", "bus pair angle", "dv/dq", "mvar")
+    return not any(term in text for term in excluded_terms)
 
 
 def _to_int(value: Any) -> int:
@@ -551,7 +560,8 @@ def _optional_float(value: Any) -> float | None:
     if value is None or str(value).strip() == "":
         return None
     try:
-        return float(str(value).strip())
+        text = str(value).strip().replace(",", "").replace("%", "")
+        return float(text)
     except ValueError:
         return None
 
