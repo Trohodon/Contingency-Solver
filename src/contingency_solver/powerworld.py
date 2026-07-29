@@ -142,7 +142,12 @@ class SimAutoClient:
         return SimAutoResponse(operation, raw, error, tuple(parts[1:]))
 
     def call(self, operation: str, *args: Any) -> SimAutoResponse:
-        return self._checked(operation, getattr(self.simauto, operation)(*args))
+        try:
+            raw = getattr(self.simauto, operation)(*args)
+        except Exception as exc:
+            LOGGER.exception("SimAuto %s raised an exception.", operation)
+            raise SimAutoCommandError(operation, str(exc)) from exc
+        return self._checked(operation, raw)
 
     def open_case(self, path: Path) -> None:
         self.call("OpenCase", str(path))
@@ -166,10 +171,7 @@ class SimAutoClient:
         return records_from_response(fields, response.payload)
 
     def get_rows_response(self, object_type: str, fields: list[str], filter_name: str = "") -> SimAutoResponse:
-        if filter_name:
-            response = self.call("GetParametersMultipleElement", object_type, fields, filter_name)
-        else:
-            response = self.call("GetParametersMultipleElement", object_type, fields)
+        response = self.call("GetParametersMultipleElement", object_type, fields, filter_name)
         LOGGER.info(
             "GetParametersMultipleElement object_type=%s filter=%r fields=%s raw=%s",
             object_type,
