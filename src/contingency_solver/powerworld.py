@@ -35,6 +35,16 @@ class SimAutoResponse:
     payload: tuple[Any, ...]
 
 
+@dataclass(frozen=True)
+class QueryAttempt:
+    object_type: str
+    filter_name: str
+    field_count: int = 0
+    row_count: int = 0
+    fields: tuple[str, ...] = ()
+    error: str = ""
+
+
 class PowerWorldSchema:
     def __init__(self, raw: dict[str, Any]) -> None:
         self.raw = raw
@@ -46,6 +56,16 @@ class PowerWorldSchema:
 
     def object_type(self, object_name: str) -> str:
         return str(self.raw["objects"][object_name]["object_type"])
+
+    def object_types(self, object_name: str) -> list[str]:
+        item = self.raw["objects"][object_name]
+        alternatives = item.get("object_type_alternatives")
+        if alternatives:
+            return [str(value) for value in alternatives]
+        return [self.object_type(object_name)]
+
+    def query_filters(self, object_name: str) -> list[str]:
+        return [str(value) for value in self.raw["objects"][object_name].get("query_filters", [""])]
 
     def alternatives(self, object_name: str, field_name: str) -> list[str]:
         return list(self.raw["objects"][object_name]["fields"][field_name])
@@ -146,8 +166,8 @@ class SimAutoClient:
                 return set(fields)
         raise SimAutoCommandError("GetFieldList", f"Could not inspect fields for {object_type}. Last error: {last_error}")
 
-    def get_rows(self, object_type: str, fields: list[str]) -> list[dict[str, Any]]:
-        response = self.call("GetParametersMultipleElement", object_type, fields, "")
+    def get_rows(self, object_type: str, fields: list[str], filter_name: str = "") -> list[dict[str, Any]]:
+        response = self.call("GetParametersMultipleElement", object_type, fields, filter_name)
         return records_from_response(fields, response.payload)
 
 
@@ -174,11 +194,58 @@ class PowerWorldReader:
         return [_branch_from_row(row, fields) for row in self.client.get_rows(object_type, list(fields.values()))]
 
     def read_contingencies(self) -> list[Contingency]:
-        object_type = self.schema.object_type("contingency")
-        available = self.client.get_field_list(object_type)
-        fields = self.schema.resolve_required("contingency", ["name"], available)
-        fields.update(self.schema.resolve_optional("contingency", ["category", "skip", "solved", "action_count"], available))
-        return [_contingency_from_row(row, fields) for row in self.client.get_rows(object_type, list(fields.values()))]
+        contingencies, attempts = self.read_contingencies_with_diagnostics()
+        if not contingencies:
+            LOGGER.warning("No contingencies were read. Attempts: %s", attempts)
+        return contingencies
+
+    def read_contingencies_with_diagnostics(self) -> tuple[list[Contingency], list[QueryAttempt]]:
+        attempts: list[QueryAttempt] = []
+        for object_type in self.schema.object_types("contingency"):
+            try:
+                available = self.client.get_field_list(object_type)
+                fields = self.schema.resolve_required("contingency", ["name"], available)
+                fields.update(self.schema.resolve_optional("contingency", ["category", "skip", "solved", "action_count"], available))
+            except Exception as exc:
+                attempts.append(QueryAttempt(object_type=object_type, filter_name="", error=str(exc)))
+                continue
+            field_values = list(fields.values())
+            for filter_name in self.schema.query_filters("contingency"):
+                try:
+                    rows = self.client.get_rows(object_type, field_values, filter_name)
+                except Exception as exc:
+                    attempts.append(
+                        QueryAttempt(
+                            object_type=object_type,
+                            filter_name=filter_name,
+                            field_count=len(field_values),
+                            fields=tuple(field_values),
+                            error=str(exc),
+                        )
+                    )
+                    continue
+                attempts.append(
+                    QueryAttempt(
+                        object_type=object_type,
+                        filter_name=filter_name,
+                        field_count=len(field_values),
+                        row_count=len(rows),
+                        fields=tuple(field_values),
+                    )
+                )
+                if rows:
+                    contingencies = [_contingency_from_row(row, fields) for row in rows]
+                    contingencies = [item for item in contingencies if item.name]
+                    if contingencies:
+                        LOGGER.info(
+                            "Read %s contingencies using object_type=%s filter=%r fields=%s.",
+                            len(contingencies),
+                            object_type,
+                            filter_name,
+                            field_values,
+                        )
+                        return contingencies, attempts
+        return [], attempts
 
 
 def records_from_response(fields: list[str], payload: tuple[Any, ...]) -> list[dict[str, Any]]:
