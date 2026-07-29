@@ -42,6 +42,7 @@ class QueryAttempt:
     field_count: int = 0
     row_count: int = 0
     fields: tuple[str, ...] = ()
+    raw_summary: str = ""
     error: str = ""
 
 
@@ -154,21 +155,29 @@ class SimAutoClient:
         return "Connected"
 
     def get_field_list(self, object_type: str) -> set[str]:
-        last_error: Exception | None = None
-        for args in ((object_type,), (object_type, "")):
-            try:
-                response = self.call("GetFieldList", *args)
-            except Exception as exc:
-                last_error = exc
-                continue
-            fields = _flatten_strings(response.payload)
-            if fields:
-                return set(fields)
-        raise SimAutoCommandError("GetFieldList", f"Could not inspect fields for {object_type}. Last error: {last_error}")
+        response = self.call("GetFieldList", object_type)
+        fields = _flatten_strings(response.payload)
+        if fields:
+            return set(fields)
+        raise SimAutoCommandError("GetFieldList", f"Could not inspect fields for {object_type}. Raw response: {_summarize(response.raw)}")
 
     def get_rows(self, object_type: str, fields: list[str], filter_name: str = "") -> list[dict[str, Any]]:
-        response = self.call("GetParametersMultipleElement", object_type, fields, filter_name)
+        response = self.get_rows_response(object_type, fields, filter_name)
         return records_from_response(fields, response.payload)
+
+    def get_rows_response(self, object_type: str, fields: list[str], filter_name: str = "") -> SimAutoResponse:
+        if filter_name:
+            response = self.call("GetParametersMultipleElement", object_type, fields, filter_name)
+        else:
+            response = self.call("GetParametersMultipleElement", object_type, fields)
+        LOGGER.info(
+            "GetParametersMultipleElement object_type=%s filter=%r fields=%s raw=%s",
+            object_type,
+            filter_name,
+            fields,
+            _summarize(response.raw),
+        )
+        return response
 
 
 class PowerWorldReader:
@@ -180,18 +189,48 @@ class PowerWorldReader:
         self.client.open_case(path)
 
     def read_buses(self) -> list[Bus]:
+        buses, _attempt = self.read_buses_with_diagnostics()
+        return buses
+
+    def read_branches(self) -> list[Branch]:
+        branches, _attempt = self.read_branches_with_diagnostics()
+        return branches
+
+    def read_buses_with_diagnostics(self) -> tuple[list[Bus], QueryAttempt]:
         object_type = self.schema.object_type("bus")
         available = self.client.get_field_list(object_type)
         fields = self.schema.resolve_required("bus", ["number", "name", "nominal_kv", "latitude", "longitude", "status"], available)
         fields.update(self.schema.resolve_optional("bus", ["area", "zone", "owner", "substation"], available))
-        return [_bus_from_row(row, fields) for row in self.client.get_rows(object_type, list(fields.values()))]
+        field_values = list(fields.values())
+        response = self._get_rows_response(object_type, field_values)
+        rows = records_from_response(field_values, response.payload)
+        attempt = QueryAttempt(
+            object_type=object_type,
+            filter_name="",
+            field_count=len(field_values),
+            row_count=len(rows),
+            fields=tuple(field_values),
+            raw_summary=_summarize(response.raw),
+        )
+        return [_bus_from_row(row, fields) for row in rows], attempt
 
-    def read_branches(self) -> list[Branch]:
+    def read_branches_with_diagnostics(self) -> tuple[list[Branch], QueryAttempt]:
         object_type = self.schema.object_type("branch")
         available = self.client.get_field_list(object_type)
         fields = self.schema.resolve_required("branch", ["from_bus", "to_bus", "circuit", "status"], available)
         fields.update(self.schema.resolve_optional("branch", ["nominal_kv"], available))
-        return [_branch_from_row(row, fields) for row in self.client.get_rows(object_type, list(fields.values()))]
+        field_values = list(fields.values())
+        response = self._get_rows_response(object_type, field_values)
+        rows = records_from_response(field_values, response.payload)
+        attempt = QueryAttempt(
+            object_type=object_type,
+            filter_name="",
+            field_count=len(field_values),
+            row_count=len(rows),
+            fields=tuple(field_values),
+            raw_summary=_summarize(response.raw),
+        )
+        return [_branch_from_row(row, fields) for row in rows], attempt
 
     def read_contingencies(self) -> list[Contingency]:
         contingencies, attempts = self.read_contingencies_with_diagnostics()
@@ -212,7 +251,8 @@ class PowerWorldReader:
             field_values = list(fields.values())
             for filter_name in self.schema.query_filters("contingency"):
                 try:
-                    rows = self.client.get_rows(object_type, field_values, filter_name)
+                    response = self._get_rows_response(object_type, field_values, filter_name)
+                    rows = records_from_response(field_values, response.payload)
                 except Exception as exc:
                     attempts.append(
                         QueryAttempt(
@@ -231,6 +271,7 @@ class PowerWorldReader:
                         field_count=len(field_values),
                         row_count=len(rows),
                         fields=tuple(field_values),
+                        raw_summary=_summarize(response.raw),
                     )
                 )
                 if rows:
@@ -247,11 +288,21 @@ class PowerWorldReader:
                         return contingencies, attempts
         return [], attempts
 
+    def _get_rows_response(self, object_type: str, fields: list[str], filter_name: str = "") -> SimAutoResponse:
+        if hasattr(self.client, "get_rows_response"):
+            return self.client.get_rows_response(object_type, fields, filter_name)
+        rows = self.client.get_rows(object_type, fields, filter_name)
+        values = [tuple(row.get(field) for field in fields) for row in rows]
+        return SimAutoResponse("GetParametersMultipleElement", ("", tuple(fields), tuple(values)), "", (tuple(fields), tuple(values)))
+
 
 def records_from_response(fields: list[str], payload: tuple[Any, ...]) -> list[dict[str, Any]]:
     if not payload:
         return []
-    data = payload[-1]
+    candidates = [item for item in payload if isinstance(item, (list, tuple))]
+    if not candidates:
+        return []
+    data = candidates[-1]
     rows = list(data) if isinstance(data, (list, tuple)) else []
     records: list[dict[str, Any]] = []
     for row in rows:
@@ -261,7 +312,29 @@ def records_from_response(fields: list[str], payload: tuple[Any, ...]) -> list[d
             records.append(dict(zip(fields, row, strict=True)))
         elif isinstance(row, (list, tuple)) and len(row) == 1 and isinstance(row[0], (list, tuple)):
             records.append(dict(zip(fields, row[0], strict=True)))
+    if records:
+        return records
+
+    if len(rows) == len(fields) and all(isinstance(column, (list, tuple)) for column in rows):
+        column_lengths = {len(column) for column in rows}
+        if len(column_lengths) == 1:
+            return [dict(zip(fields, values, strict=True)) for values in zip(*rows, strict=True)]
     return records
+
+
+def _summarize(value: Any, depth: int = 0) -> str:
+    if depth >= 3:
+        return type(value).__name__
+    if isinstance(value, (list, tuple)):
+        preview = ", ".join(_summarize(item, depth + 1) for item in list(value)[:3])
+        suffix = ", ..." if len(value) > 3 else ""
+        return f"{type(value).__name__}[len={len(value)}]({preview}{suffix})"
+    if isinstance(value, dict):
+        return f"dict[len={len(value)}]"
+    text = repr(value)
+    if len(text) > 80:
+        text = text[:77] + "..."
+    return f"{type(value).__name__}={text}"
 
 
 def _flatten_strings(value: Any) -> list[str]:
