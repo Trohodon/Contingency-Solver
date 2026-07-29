@@ -18,11 +18,30 @@ class FakeClient:
             "Bus": {"BusNum", "BusName", "BusNomVolt", "Latitude", "Longitude", "Status"},
             "Branch": {"BusNum", "BusNum:1", "LineCircuit", "Status"},
             "Contingency": {"CTGLabel", "Category", "Skip", "Solved", "NumActions"},
+            "ViolationCTG": {"CTGLabel", "LimViolID", "LimViolLimit", "LimViolValue", "LimViolPct", "LimViolCat"},
         }
         self.rows = {
             "Bus": [{"BusNum": "101", "BusName": "A", "BusNomVolt": "115", "Latitude": "40", "Longitude": "-82", "Status": "Closed"}],
             "Branch": [{"BusNum": "101", "BusNum:1": "102", "LineCircuit": "1", "Status": "Closed"}],
             "Contingency": [{"CTGLabel": "CTG_A", "Category": "Thermal", "Skip": "No", "Solved": "Yes", "NumActions": "1"}],
+            "ViolationCTG": [
+                {
+                    "CTGLabel": "CTG_A",
+                    "LimViolID": "Line 101-102 1",
+                    "LimViolLimit": "100",
+                    "LimViolValue": "125",
+                    "LimViolPct": "125",
+                    "LimViolCat": "Line/Transformer",
+                },
+                {
+                    "CTGLabel": "CTG_B",
+                    "LimViolID": "Bus 55 low voltage",
+                    "LimViolLimit": "0.95",
+                    "LimViolValue": "0.92",
+                    "LimViolPct": "0",
+                    "LimViolCat": "Bus Voltage",
+                },
+            ],
         }
 
     def get_field_list(self, object_type: str) -> set[str]:
@@ -30,6 +49,9 @@ class FakeClient:
 
     def get_rows(self, object_type: str, fields: list[str], filter_name: str = "") -> list[dict[str, Any]]:
         return [{field: row[field] for field in fields} for row in self.rows[object_type]]
+
+    def run_script_command(self, command: str) -> None:
+        return None
 
 
 def schema() -> PowerWorldSchema:
@@ -71,6 +93,17 @@ def schema() -> PowerWorldSchema:
                         "action_count": ["NumActions"],
                     },
                 },
+                "violation_ctg": {
+                    "object_type": "ViolationCTG",
+                    "fields": {
+                        "contingency": ["CTGLabel"],
+                        "violation_id": ["LimViolID"],
+                        "limit": ["LimViolLimit"],
+                        "value": ["LimViolValue"],
+                        "percent": ["LimViolPct"],
+                        "category": ["LimViolCat"],
+                    },
+                },
             }
         }
     )
@@ -98,3 +131,13 @@ def test_reader_maps_powerworld_rows() -> None:
     assert reader.read_buses()[0].number == 101
     assert reader.read_branches()[0].pair == (101, 102)
     assert reader.read_contingencies()[0].name == "CTG_A"
+
+
+def test_reader_maps_violation_ctg_line_transformer_overloads() -> None:
+    reader = PowerWorldReader(FakeClient(), schema())  # type: ignore[arg-type]
+    violations, attempts = reader.read_thermal_violations_with_diagnostics()
+    assert attempts
+    assert len(violations) == 1
+    assert violations[0].contingency == "CTG_A"
+    assert violations[0].branch_key == "Line 101-102 1"
+    assert violations[0].percent_loading == 125
