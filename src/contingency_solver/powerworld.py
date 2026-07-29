@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from contingency_solver.core import Branch, Bus, Contingency
+from contingency_solver.core import Branch, Bus, Contingency, ThermalViolation
 from contingency_solver.storage import CONFIG_DIR
 
 LOGGER = logging.getLogger(__name__)
@@ -334,6 +334,75 @@ class PowerWorldReader:
                         return contingencies, attempts
         return [], attempts
 
+    def read_thermal_violations_with_diagnostics(self) -> tuple[list[ThermalViolation], list[QueryAttempt]]:
+        attempts: list[QueryAttempt] = []
+        try:
+            self.client.run_script_command("EnterMode(Contingency);")
+        except Exception as exc:
+            attempts.append(QueryAttempt(object_type="ViolationCTG", filter_name="", error=f"EnterMode(Contingency) failed: {exc}"))
+
+        for object_type in self.schema.object_types("violation_ctg"):
+            try:
+                available = self.client.get_field_list(object_type)
+                fields = self.schema.resolve_required("violation_ctg", ["contingency", "violation_id", "value", "percent"], available)
+                fields.update(self.schema.resolve_optional("violation_ctg", ["limit", "category"], available))
+            except Exception as exc:
+                attempts.append(QueryAttempt(object_type=object_type, filter_name="", error=str(exc)))
+                # SaveData can still work when GetFieldList is touchy, so try canonical configured names.
+                fields = self._default_violation_ctg_fields()
+
+            field_values = list(fields.values())
+            for filter_name in self.schema.query_filters("violation_ctg"):
+                try:
+                    response = self._get_rows_response(object_type, field_values, filter_name)
+                    rows = records_from_response(field_values, response.payload)
+                    raw_summary = _summarize(response.raw)
+                    if not rows and hasattr(self.client, "export_rows_csv"):
+                        try:
+                            rows = self.client.export_rows_csv(object_type, field_values)
+                            raw_summary += f"; csv_fallback_rows={len(rows)}"
+                        except Exception as exc:
+                            raw_summary += f"; csv_fallback_error={exc}"
+                except Exception as exc:
+                    attempts.append(
+                        QueryAttempt(
+                            object_type=object_type,
+                            filter_name=filter_name,
+                            field_count=len(field_values),
+                            fields=tuple(field_values),
+                            error=str(exc),
+                        )
+                    )
+                    continue
+
+                violations = [_thermal_violation_from_row(row, fields) for row in rows]
+                violations = [item for item in violations if _is_line_or_transformer_overload(item)]
+                violations.sort(key=lambda item: item.percent_loading, reverse=True)
+                attempts.append(
+                    QueryAttempt(
+                        object_type=object_type,
+                        filter_name=filter_name,
+                        field_count=len(field_values),
+                        row_count=len(violations),
+                        fields=tuple(field_values),
+                        raw_summary=raw_summary,
+                    )
+                )
+                if violations:
+                    LOGGER.info("Read %s line/transformer overload rows from ViolationCTG.", len(violations))
+                    return violations, attempts
+        return [], attempts
+
+    def _default_violation_ctg_fields(self) -> dict[str, str]:
+        return {
+            "contingency": self.schema.alternatives("violation_ctg", "contingency")[0],
+            "violation_id": self.schema.alternatives("violation_ctg", "violation_id")[0],
+            "limit": self.schema.alternatives("violation_ctg", "limit")[0],
+            "value": self.schema.alternatives("violation_ctg", "value")[0],
+            "percent": self.schema.alternatives("violation_ctg", "percent")[0],
+            "category": self.schema.alternatives("violation_ctg", "category")[0],
+        }
+
     def _get_rows_response(self, object_type: str, fields: list[str], filter_name: str = "") -> SimAutoResponse:
         if hasattr(self.client, "get_rows_response"):
             return self.client.get_rows_response(object_type, fields, filter_name)
@@ -444,6 +513,30 @@ def _contingency_from_row(row: dict[str, Any], fields: dict[str, str]) -> Contin
         _optional_bool(row.get(fields["solved"])) if "solved" in fields else None,
         _optional_int(row.get(fields["action_count"])) if "action_count" in fields else None,
     )
+
+
+def _thermal_violation_from_row(row: dict[str, Any], fields: dict[str, str]) -> ThermalViolation:
+    violation_id = str(row.get(fields["violation_id"], "")).strip()
+    return ThermalViolation(
+        branch_key=violation_id,
+        from_bus=0,
+        to_bus=0,
+        circuit_id="",
+        mva=_optional_float(row.get(fields["value"])) or 0.0,
+        rating_mva=(_optional_float(row.get(fields["limit"])) if "limit" in fields else 0.0) or 0.0,
+        percent_loading=_optional_float(row.get(fields["percent"])) or 0.0,
+        contingency=str(row.get(fields["contingency"], "")).strip(),
+        category=str(row.get(fields["category"], "")).strip() if "category" in fields else "",
+    )
+
+
+def _is_line_or_transformer_overload(item: ThermalViolation) -> bool:
+    if item.percent_loading <= 100.0:
+        return False
+    category = item.category.lower()
+    if not category:
+        return True
+    return any(token in category for token in ("line", "transformer", "xfmr", "branch"))
 
 
 def _to_int(value: Any) -> int:
