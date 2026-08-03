@@ -15,7 +15,7 @@ from contingency_solver.core import (
     new_voltage_violations,
     ohms_to_per_unit,
     score_candidate,
-    summarize_thermal_by_contingency,
+    summarize_thermal_by_line,
     ScoreWeights,
     validate_conductor_models,
     voltage_class,
@@ -102,16 +102,16 @@ def test_violation_comparison() -> None:
     assert [item.bus_number for item in new_voltage_violations(voltage_base, voltage_candidate)] == [2]
 
 
-def test_summarize_thermal_by_contingency() -> None:
+def test_summarize_thermal_by_line_groups_multiple_contingencies_on_same_issue() -> None:
     rows = [
-        ThermalViolation("Line A", 0, 0, "", 95, 100, 95, contingency="CTG1"),
-        ThermalViolation("Line B", 0, 0, "", 98, 100, 98, contingency="CTG1"),
-        ThermalViolation("Line C", 0, 0, "", 96, 100, 96, contingency="CTG2"),
+        ThermalViolation("Bus1 - Bus2 ckt 1", 0, 0, "", 95, 100, 95, contingency="CTG1"),
+        ThermalViolation("Bus1 - Bus2 ckt 1", 0, 0, "", 98, 100, 98, contingency="CTG2"),
+        ThermalViolation("Bus3 - Bus4 ckt 1", 0, 0, "", 96, 100, 96, contingency="CTG3"),
     ]
-    summaries = summarize_thermal_by_contingency(rows)
-    assert [item.contingency for item in summaries] == ["CTG1", "CTG2"]
+    summaries = summarize_thermal_by_line(rows)
+    assert [item.branch_key for item in summaries] == ["Bus1 - Bus2 ckt 1", "Bus3 - Bus4 ckt 1"]
     assert summaries[0].result_count == 2
-    assert summaries[0].worst_branch_key == "Line B"
+    assert summaries[0].worst_contingency == "CTG2"
     assert summaries[0].worst_percent_loading == 98
 
 
