@@ -12,9 +12,11 @@ from contingency_solver.core import (
     CandidateLine,
     CandidateResult,
     CandidateSettings,
+    ContingencyLoadingSummary,
     ConductorModel,
     generate_candidates,
     result_to_row,
+    summarize_thermal_by_contingency,
     validate_conductor_models,
 )
 from contingency_solver.mock import (
@@ -74,6 +76,7 @@ class ContingencySolverApp(tk.Tk):
         self.branches = mock_branches()
         self.contingencies = mock_contingencies()
         self.baseline_overloads = mock_baseline_overloads()
+        self.baseline_summaries: list[ContingencyLoadingSummary] = summarize_thermal_by_contingency(self.baseline_overloads)
         self.voltage_violations = mock_voltage_violations()
         self.selected_branch = self.branches[1]
         self.candidates: list[CandidateLine] = []
@@ -196,12 +199,16 @@ class ContingencySolverApp(tk.Tk):
         self.ctg_tree = self._tree(page, ("Name", "Category", "Skip", "Solved", "Actions"))
 
     def _build_baseline_page(self, page: ttk.Frame) -> None:
-        self._title(page, "Baseline Results", "Line/transformer thermal loading results from PowerWorld ViolationCTG, sorted by percent loading.")
+        self._title(page, "Baseline Results", "Contingency result summary from ViolationCTG. Select a row to see the line/transformer details behind it.")
         self.baseline_status_var = tk.StringVar(value="Status: mock contingency solved with thermal loading results.")
         ttk.Label(page, textvariable=self.baseline_status_var, style="Status.TLabel").pack(anchor="w", pady=(0, 6))
-        self.baseline_tree = self._tree(page, ("Contingency", "Line/Transformer", "Category", "Limit", "Value", "% Loading"), height=12)
+        ttk.Label(page, text="Contingency Summary").pack(anchor="w", pady=(0, 4))
+        self.baseline_tree = self._tree(page, ("Contingency", "Line/Transformer Count", "Worst Line/Transformer", "Worst %", "Worst Value", "Worst Limit"), height=8)
+        self.baseline_tree.bind("<<TreeviewSelect>>", lambda _event: self._fill_selected_contingency_details())
+        ttk.Label(page, text="Selected Contingency Line/Transformer Details").pack(anchor="w", pady=(10, 4))
+        self.baseline_detail_tree = self._tree(page, ("Line/Transformer", "Category", "Limit", "Value", "% Loading"), height=8)
         ttk.Label(page, text="Voltage Violations are de-prioritized for now.").pack(anchor="w", pady=(10, 4))
-        self.voltage_tree = self._tree(page, ("Bus", "Name", "Voltage pu", "Limit pu", "Type"), height=6)
+        self.voltage_tree = self._tree(page, ("Bus", "Name", "Voltage pu", "Limit pu", "Type"), height=4)
 
     def _build_candidate_page(self, page: ttk.Frame) -> None:
         self._title(page, "Candidate Setup", "Generate same-voltage 115 kV and 230 kV candidate lines from bus coordinates.")
@@ -340,24 +347,56 @@ class ContingencySolverApp(tk.Tk):
         self._set_tree_rows(self.ctg_tree, rows)
 
     def _fill_baseline(self) -> None:
+        self.baseline_summaries = summarize_thermal_by_contingency(self.baseline_overloads)
         self.baseline_status_var.set(
-            f"Line/transformer rows at or above {self.thermal_results_min_loading_pct:.1f}%: {len(self.baseline_overloads)}"
+            f"Contingencies with line/transformer rows at or above {self.thermal_results_min_loading_pct:.1f}%: "
+            f"{len(self.baseline_summaries)} | detail rows: {len(self.baseline_overloads)}"
         )
         self._set_tree_rows(
             self.baseline_tree,
             [
                 (
-                    v.contingency,
-                    v.branch_key,
-                    v.category,
-                    f"{v.rating_mva:.2f}",
-                    f"{v.mva:.2f}",
-                    f"{v.percent_loading:.2f}",
+                    summary.contingency,
+                    summary.result_count,
+                    summary.worst_branch_key,
+                    f"{summary.worst_percent_loading:.2f}",
+                    f"{summary.worst_mva:.2f}",
+                    f"{summary.worst_rating_mva:.2f}",
                 )
-                for v in self.baseline_overloads
+                for summary in self.baseline_summaries
             ],
         )
+        self._fill_selected_contingency_details()
         self._set_tree_rows(self.voltage_tree, [(v.bus_number, v.bus_name, v.voltage_pu, v.limit_pu, v.violation_type) for v in self.voltage_violations])
+
+    def _fill_selected_contingency_details(self) -> None:
+        selected = self.baseline_tree.selection() if hasattr(self, "baseline_tree") else ()
+        if selected:
+            contingency = str(self.baseline_tree.item(selected[0], "values")[0])
+        elif self.baseline_summaries:
+            contingency = self.baseline_summaries[0].contingency
+        else:
+            contingency = ""
+
+        rows = [
+            row
+            for row in self.baseline_overloads
+            if (row.contingency or "(No contingency label)") == contingency
+        ]
+        rows.sort(key=lambda item: item.percent_loading, reverse=True)
+        self._set_tree_rows(
+            self.baseline_detail_tree,
+            [
+                (
+                    row.branch_key,
+                    row.category,
+                    f"{row.rating_mva:.2f}",
+                    f"{row.mva:.2f}",
+                    f"{row.percent_loading:.2f}",
+                )
+                for row in rows
+            ],
+        )
 
     def _fill_conductors(self) -> None:
         self._set_tree_rows(
@@ -447,6 +486,7 @@ class ContingencySolverApp(tk.Tk):
         self.branches = mock_branches()
         self.contingencies = mock_contingencies()
         self.baseline_overloads = mock_baseline_overloads()
+        self.baseline_summaries = summarize_thermal_by_contingency(self.baseline_overloads)
         self.voltage_violations = mock_voltage_violations()
         self.selected_branch = self.branches[1]
         self.candidates = []
