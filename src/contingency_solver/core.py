@@ -114,6 +114,16 @@ class ThermalViolation:
 
 
 @dataclass(frozen=True)
+class ContingencyLoadingSummary:
+    contingency: str
+    result_count: int
+    worst_branch_key: str
+    worst_percent_loading: float
+    worst_mva: float
+    worst_rating_mva: float
+
+
+@dataclass(frozen=True)
 class VoltageViolation:
     bus_number: int
     bus_name: str
@@ -372,6 +382,29 @@ def new_thermal_violations(baseline: list[ThermalViolation], candidate: list[The
 def new_voltage_violations(baseline: list[VoltageViolation], candidate: list[VoltageViolation]) -> list[VoltageViolation]:
     baseline_keys = {(item.bus_number, item.violation_type) for item in baseline}
     return [item for item in candidate if (item.bus_number, item.violation_type) not in baseline_keys]
+
+
+def summarize_thermal_by_contingency(violations: list[ThermalViolation]) -> list[ContingencyLoadingSummary]:
+    grouped: dict[str, list[ThermalViolation]] = {}
+    for violation in violations:
+        key = violation.contingency or "(No contingency label)"
+        grouped.setdefault(key, []).append(violation)
+
+    summaries: list[ContingencyLoadingSummary] = []
+    for contingency, rows in grouped.items():
+        worst = max(rows, key=lambda item: item.percent_loading)
+        summaries.append(
+            ContingencyLoadingSummary(
+                contingency=contingency,
+                result_count=len(rows),
+                worst_branch_key=worst.branch_key,
+                worst_percent_loading=worst.percent_loading,
+                worst_mva=worst.mva,
+                worst_rating_mva=worst.rating_mva,
+            )
+        )
+    summaries.sort(key=lambda item: item.worst_percent_loading, reverse=True)
+    return summaries
 
 
 def validate_conductor_models(models: dict[str, ConductorModel]) -> list[str]:
