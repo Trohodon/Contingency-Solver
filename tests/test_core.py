@@ -15,6 +15,7 @@ from contingency_solver.core import (
     new_voltage_violations,
     ohms_to_per_unit,
     score_candidate,
+    summarize_thermal_by_contingency,
     ScoreWeights,
     validate_conductor_models,
     voltage_class,
@@ -99,6 +100,19 @@ def test_violation_comparison() -> None:
     voltage_base = [VoltageViolation(1, "A", 0.94, 0.95, "LOW")]
     voltage_candidate = voltage_base + [VoltageViolation(2, "B", 1.06, 1.05, "HIGH")]
     assert [item.bus_number for item in new_voltage_violations(voltage_base, voltage_candidate)] == [2]
+
+
+def test_summarize_thermal_by_contingency() -> None:
+    rows = [
+        ThermalViolation("Line A", 0, 0, "", 95, 100, 95, contingency="CTG1"),
+        ThermalViolation("Line B", 0, 0, "", 98, 100, 98, contingency="CTG1"),
+        ThermalViolation("Line C", 0, 0, "", 96, 100, 96, contingency="CTG2"),
+    ]
+    summaries = summarize_thermal_by_contingency(rows)
+    assert [item.contingency for item in summaries] == ["CTG1", "CTG2"]
+    assert summaries[0].result_count == 2
+    assert summaries[0].worst_branch_key == "Line B"
+    assert summaries[0].worst_percent_loading == 98
 
 
 def test_conductor_validation() -> None:
