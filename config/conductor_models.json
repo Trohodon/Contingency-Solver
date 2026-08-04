@@ -3,32 +3,32 @@
   "voltage_tolerance_kv": 1.0,
   "line_models": {
     "115": {
-      "name": "115 kV 1272 ACSR",
+      "name": "115 kV 1272 ACSR BITTERN",
       "nominal_kv": 115.0,
       "bundle_count": 1,
-      "resistance_ohm_per_mile": 0.08,
-      "reactance_ohm_per_mile": 0.42,
-      "charging_input_type": "susceptance_per_mile",
-      "charging_value_per_mile": 0.0000032,
-      "rate_a_mva": 180.0,
-      "rate_b_mva": 220.0,
-      "rate_c_mva": 260.0,
+      "resistance_ohm_per_mile": 0.0832,
+      "reactance_ohm_per_mile": 0.378,
+      "charging_input_type": "capacitive_reactance_megaohm_mile",
+      "charging_value_per_mile": 0.0855,
+      "rate_a_mva": 237.03,
+      "rate_b_mva": 254.2,
+      "rate_c_mva": 314.61,
       "circuit_count": 1,
-      "notes": "Mock default. Replace with utility-approved values before real screening."
+      "notes": "Source: LineRateTLIC Resources/ConductorData.xlsx row 1272 ACSR BITTERN. Ratings converted from amps to MVA at 115 kV."
     },
     "230": {
-      "name": "230 kV Bundled 1272 ACSR",
+      "name": "230 kV Bundled 1272 ACSR BITTERN",
       "nominal_kv": 230.0,
       "bundle_count": 2,
-      "resistance_ohm_per_mile": 0.04,
-      "reactance_ohm_per_mile": 0.31,
-      "charging_input_type": "susceptance_per_mile",
-      "charging_value_per_mile": 0.000005,
-      "rate_a_mva": 450.0,
-      "rate_b_mva": 550.0,
-      "rate_c_mva": 650.0,
+      "resistance_ohm_per_mile": 0.0416,
+      "reactance_ohm_per_mile": 0.378,
+      "charging_input_type": "capacitive_reactance_megaohm_mile",
+      "charging_value_per_mile": 0.0855,
+      "rate_a_mva": 948.13,
+      "rate_b_mva": 1016.8,
+      "rate_c_mva": 1258.46,
       "circuit_count": 1,
-      "notes": "Mock default. User-entered values are required for engineering use."
+      "notes": "Source: LineRateTLIC 1272 ACSR BITTERN with bundle_count=2. Resistance and ampacity are adjusted for two conductors; reactance and charging use source table values until bundle spacing/structure geometry is confirmed."
     }
   }
 }
