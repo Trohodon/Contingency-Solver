@@ -316,7 +316,7 @@ def calculate_line_parameters(model: ConductorModel, length_miles: float, system
         raise ValueError(f"Conductor model '{model.name}' is missing: {', '.join(missing)}")
     resistance = float(model.resistance_ohm_per_mile) * length_miles
     reactance = float(model.reactance_ohm_per_mile) * length_miles
-    charging = float(model.charging_value_per_mile) * length_miles
+    charging = calculate_total_line_charging(model.charging_input_type, float(model.charging_value_per_mile), length_miles)
     zbase = base_impedance_ohms(model.nominal_kv, system_mva_base)
     return LineElectricalParameters(
         resistance,
@@ -328,6 +328,19 @@ def calculate_line_parameters(model: ConductorModel, length_miles: float, system
         float(model.rate_a_mva),
         float(model.rate_b_mva),
         float(model.rate_c_mva),
+    )
+
+
+def calculate_total_line_charging(charging_input_type: str, charging_value_per_mile: float, length_miles: float) -> float:
+    if charging_input_type == "susceptance_per_mile":
+        return charging_value_per_mile * length_miles
+    if charging_input_type == "capacitive_reactance_megaohm_mile":
+        if charging_value_per_mile <= 0:
+            raise ValueError("Capacitive reactance must be greater than zero.")
+        return (1.0 / (charging_value_per_mile * 1_000_000.0)) * length_miles
+    raise ValueError(
+        f"Unsupported charging input type '{charging_input_type}'. "
+        "Supported values: susceptance_per_mile, capacitive_reactance_megaohm_mile."
     )
 
 
