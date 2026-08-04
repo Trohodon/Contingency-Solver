@@ -200,6 +200,7 @@ class LineElectricalParameters:
     zbase_ohms: float
     r_pu: float
     x_pu: float
+    charging_pu: float
     rate_a_mva: float
     rate_b_mva: float
     rate_c_mva: float
@@ -213,6 +214,7 @@ class CandidateElectricalPreview:
     reactance_ohms: float | None
     r_pu: float | None
     x_pu: float | None
+    charging_pu: float | None
     rate_a_mva: float | None
     validation_message: str
 
@@ -325,6 +327,7 @@ def calculate_line_parameters(model: ConductorModel, length_miles: float, system
         zbase,
         resistance / zbase,
         reactance / zbase,
+        charging * zbase,
         float(model.rate_a_mva),
         float(model.rate_b_mva),
         float(model.rate_c_mva),
@@ -351,11 +354,11 @@ def preview_candidate_electricals(
 ) -> CandidateElectricalPreview:
     model = conductor_models.get(candidate.conductor_key)
     if model is None:
-        return CandidateElectricalPreview(candidate, "", None, None, None, None, None, f"No conductor model for {candidate.conductor_key} kV.")
+        return CandidateElectricalPreview(candidate, "", None, None, None, None, None, None, f"No conductor model for {candidate.conductor_key} kV.")
     try:
         params = calculate_line_parameters(model, candidate.distance_miles, system_mva_base)
     except ValueError as exc:
-        return CandidateElectricalPreview(candidate, model.name, None, None, None, None, model.rate_a_mva, str(exc))
+        return CandidateElectricalPreview(candidate, model.name, None, None, None, None, None, model.rate_a_mva, str(exc))
     return CandidateElectricalPreview(
         candidate=candidate,
         conductor_name=model.name,
@@ -363,6 +366,7 @@ def preview_candidate_electricals(
         reactance_ohms=params.reactance_ohms,
         r_pu=params.r_pu,
         x_pu=params.x_pu,
+        charging_pu=params.charging_pu,
         rate_a_mva=params.rate_a_mva,
         validation_message="OK",
     )
