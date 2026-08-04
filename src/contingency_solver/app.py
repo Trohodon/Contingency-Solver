@@ -35,6 +35,7 @@ from contingency_solver.powerworld import PowerWorldReader, SchemaResolutionErro
 from contingency_solver.storage import (
     EXPORT_DIR,
     LOG_DIR,
+    create_working_case_copy,
     ensure_dirs,
     export_csv,
     export_excel,
@@ -75,6 +76,8 @@ class ContingencySolverApp(tk.Tk):
         self.system_mva_base, self.voltage_tolerance_kv, self.conductors = load_conductors()
         self.powerworld = PowerWorldReader()
         self.real_case_loaded = False
+        self.original_case_path: Path | None = None
+        self.working_case_path: Path | None = None
 
         self.buses = mock_buses()
         self.branches = mock_branches()
@@ -589,7 +592,8 @@ class ContingencySolverApp(tk.Tk):
             messagebox.showwarning(APP_NAME, "Select an existing PowerWorld case first.")
             return
         try:
-            self.powerworld.open_case(path)
+            working_path = create_working_case_copy(path)
+            self.powerworld.open_case(working_path)
             self.buses, bus_attempt = self.powerworld.read_buses_with_diagnostics()
             self.branches, branch_attempt = self.powerworld.read_branches_with_diagnostics()
             self.branch_pair_index = build_branch_pair_index(self.branches)
@@ -603,6 +607,8 @@ class ContingencySolverApp(tk.Tk):
             messagebox.showerror(APP_NAME, self._readable_error(exc))
             return
         self.real_case_loaded = True
+        self.original_case_path = path
+        self.working_case_path = working_path
         self.selected_branch = self.branches[0] if self.branches else Branch(0, 0)
         self.selected_issue_key = self.selected_branch_label()
         self.baseline_summaries = summarize_thermal_by_line(self.baseline_overloads)
@@ -637,6 +643,8 @@ class ContingencySolverApp(tk.Tk):
         self.candidates = []
         self.results = []
         self.real_case_loaded = False
+        self.original_case_path = None
+        self.working_case_path = None
         self.case_path_var.set("Mock sample case - no confidential case loaded")
         self.connection_detail_var.set("MOCK MODE - simulated data")
         self.version_var.set("Unavailable in mock mode")
@@ -864,7 +872,10 @@ class ContingencySolverApp(tk.Tk):
         violation_attempts: list[object],
     ) -> str:
         lines = [
-            f"Real PowerWorld data loaded from: {path}",
+            f"Original selected PowerWorld case: {path}",
+            f"Temporary working copy opened in PowerWorld: {self.working_case_path or '(not created)'}",
+            "",
+            "The original selected case is not opened for screening. Future candidate insertion/reruns must reload this working copy or create a fresh copy before each candidate.",
             "",
             f"Bus count: {len(self.buses)}",
             f"Branch count: {len(self.branches)}",
