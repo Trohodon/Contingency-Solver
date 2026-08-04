@@ -22,11 +22,22 @@ CONFIG_DIR = ROOT / "config"
 USER_DATA = ROOT / "user_data"
 LOG_DIR = USER_DATA / "logs"
 EXPORT_DIR = USER_DATA / "exports"
+WORKING_CASE_DIR = USER_DATA / "working_cases"
 
 
 def ensure_dirs() -> None:
-    for path in (USER_DATA, LOG_DIR, EXPORT_DIR):
+    for path in (USER_DATA, LOG_DIR, EXPORT_DIR, WORKING_CASE_DIR):
         path.mkdir(exist_ok=True)
+
+
+def create_working_case_copy(source_path: Path) -> Path:
+    ensure_dirs()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_stem = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in source_path.stem)
+    destination = WORKING_CASE_DIR / f"{safe_stem}_{timestamp}{source_path.suffix}"
+    shutil.copy2(source_path, destination)
+    LOGGER.info("Created PowerWorld working case copy. source=%s destination=%s", source_path, destination)
+    return destination
 
 
 def load_settings() -> dict[str, Any]:
