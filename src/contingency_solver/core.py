@@ -418,31 +418,132 @@ def branch_display(branch: Branch, buses: list[Bus]) -> str:
     return f"{left_label} - {right_label} ckt {branch.circuit_id}{kv}"
 
 
-def match_branches_for_issue(issue_text: str, branches: list[Branch], buses: list[Bus]) -> list[Branch]:
-    scored: list[tuple[int, Branch]] = []
+def build_branch_pair_index(branches: list[Branch]) -> dict[tuple[int, int], list[Branch]]:
+    index: dict[tuple[int, int], list[Branch]] = {}
     for branch in branches:
-        score = _branch_issue_match_score(issue_text, branch, buses)
+        index.setdefault(branch.pair, []).append(branch)
+    return index
+
+
+def match_branches_for_issue(
+    issue_text: str,
+    branches: list[Branch],
+    buses: list[Bus],
+    pair_index: dict[tuple[int, int], list[Branch]] | None = None,
+) -> list[Branch]:
+    pair_index = pair_index or build_branch_pair_index(branches)
+    bus_numbers = {bus.number for bus in buses}
+    circuit_id = _extract_circuit_id(issue_text)
+
+    preferred_pair = _extract_preferred_bus_pair(issue_text, bus_numbers)
+    if preferred_pair is not None:
+        pair_candidates = _filter_by_circuit(pair_index.get(preferred_pair, []), circuit_id)
+        if pair_candidates:
+            return _rank_branch_matches(issue_text, _dedupe_branches(pair_candidates), buses)
+
+    numbers = [int(value) for value in re.findall(r"\d+", issue_text) if int(value) in bus_numbers]
+
+    numeric_candidates: list[Branch] = []
+    for left_index, left in enumerate(numbers):
+        for right in numbers[left_index + 1 :]:
+            pair = tuple(sorted((left, right)))
+            numeric_candidates.extend(pair_index.get(pair, []))
+    if numeric_candidates:
+        return _rank_branch_matches(issue_text, _filter_by_circuit(_dedupe_branches(numeric_candidates), circuit_id), buses)
+
+    # Name matching is a fallback because it can be expensive on large cases.
+    bus_by_number = {bus.number: bus for bus in buses}
+    mentioned_buses = [
+        bus
+        for bus in buses
+        if bus.name and _contains_name(_normalize_issue_text(issue_text), bus.name)
+    ]
+    name_candidates: list[Branch] = []
+    for left_index, left in enumerate(mentioned_buses):
+        for right in mentioned_buses[left_index + 1 :]:
+            name_candidates.extend(pair_index.get(tuple(sorted((left.number, right.number))), []))
+    if name_candidates:
+        return _rank_branch_matches(issue_text, _dedupe_branches(name_candidates), buses)
+
+    # Last-resort fuzzy matching is capped so the GUI cannot freeze on large cases.
+    limited_branches = branches[:2000]
+    return _rank_branch_matches(issue_text, limited_branches, buses)
+
+
+def _extract_preferred_bus_pair(issue_text: str, bus_numbers: set[int]) -> tuple[int, int] | None:
+    parts = re.split(r"\s+[-–—]\s+", issue_text, maxsplit=1)
+    if len(parts) != 2:
+        return None
+    left = _first_known_bus_number(parts[0], bus_numbers)
+    right = _first_known_bus_number(parts[1], bus_numbers)
+    if left is None or right is None or left == right:
+        return None
+    return tuple(sorted((left, right)))
+
+
+def _first_known_bus_number(text: str, bus_numbers: set[int]) -> int | None:
+    for value in re.findall(r"\d+", text):
+        number = int(value)
+        if number in bus_numbers:
+            return number
+    return None
+
+
+def _extract_circuit_id(issue_text: str) -> str | None:
+    match = re.search(r"\b(?:ckt|circuit)\s+([^\s,;]+)", issue_text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    return match.group(1).strip().lower()
+
+
+def _filter_by_circuit(branches: list[Branch], circuit_id: str | None) -> list[Branch]:
+    if not circuit_id:
+        return branches
+    exact = [branch for branch in branches if branch.circuit_id.strip().lower() == circuit_id]
+    return exact or branches
+
+
+def _rank_branch_matches(issue_text: str, branches: list[Branch], buses: list[Bus]) -> list[Branch]:
+    scored: list[tuple[int, Branch]] = []
+    bus_by_number = {bus.number: bus for bus in buses}
+    normalized_issue = _normalize_issue_text(issue_text)
+    issue_numbers = set(re.findall(r"\d+", issue_text))
+    for branch in branches:
+        score = _branch_issue_match_score(normalized_issue, issue_numbers, branch, bus_by_number)
         if score > 0:
             scored.append((score, branch))
     scored.sort(key=lambda item: (-item[0], item[1].from_bus, item[1].to_bus, item[1].circuit_id))
     return [branch for _score, branch in scored]
 
 
-def _branch_issue_match_score(issue_text: str, branch: Branch, buses: list[Bus]) -> int:
-    text = _normalize_issue_text(issue_text)
-    numbers = set(re.findall(r"\d+", issue_text))
-    bus_by_number = {bus.number: bus for bus in buses}
+def _dedupe_branches(branches: list[Branch]) -> list[Branch]:
+    seen: set[tuple[int, int, str]] = set()
+    output: list[Branch] = []
+    for branch in branches:
+        key = (branch.from_bus, branch.to_bus, branch.circuit_id)
+        if key not in seen:
+            seen.add(key)
+            output.append(branch)
+    return output
+
+
+def _branch_issue_match_score(
+    normalized_issue_text: str,
+    issue_numbers: set[str],
+    branch: Branch,
+    bus_by_number: dict[int, Bus],
+) -> int:
     left = bus_by_number.get(branch.from_bus)
     right = bus_by_number.get(branch.to_bus)
 
     score = 0
-    if str(branch.from_bus) in numbers and str(branch.to_bus) in numbers:
+    if str(branch.from_bus) in issue_numbers and str(branch.to_bus) in issue_numbers:
         score += 100
-    if left and right and _contains_name(text, left.name) and _contains_name(text, right.name):
+    if left and right and _contains_name(normalized_issue_text, left.name) and _contains_name(normalized_issue_text, right.name):
         score += 80
-    if branch.circuit_id and branch.circuit_id.lower() in text:
+    if branch.circuit_id and branch.circuit_id.lower() in normalized_issue_text:
         score += 10
-    if score and branch.nominal_kv is not None and str(int(round(branch.nominal_kv))) in numbers:
+    if score and branch.nominal_kv is not None and str(int(round(branch.nominal_kv))) in issue_numbers:
         score += 5
     return score
 
