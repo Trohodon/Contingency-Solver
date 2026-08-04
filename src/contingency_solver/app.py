@@ -18,6 +18,7 @@ from contingency_solver.core import (
     branch_display,
     generate_candidates,
     match_branches_for_issue,
+    preview_candidate_electricals,
     result_to_row,
     summarize_thermal_by_line,
     validate_conductor_models,
@@ -237,7 +238,7 @@ class ContingencySolverApp(tk.Tk):
             ("Maximum line length", ttk.Entry(controls, textvariable=self.max_length_var, width=10)),
             ("Geographic mode", ttk.Combobox(controls, textvariable=self.mode_var, values=("endpoints", "midpoint"), width=14, state="readonly")),
             ("Voltage class", ttk.Combobox(controls, textvariable=self.voltage_filter_var, values=("115 and 230", "115 only", "230 only"), width=14, state="readonly")),
-            ("Maximum candidates", ttk.Entry(controls, textvariable=self.max_candidates_var, width=10)),
+            ("Maximum candidate pairs", ttk.Entry(controls, textvariable=self.max_candidates_var, width=10)),
         ]
         for index, (label, widget) in enumerate(entries):
             ttk.Label(controls, text=label).grid(row=index // 3, column=(index % 3) * 2, sticky="w", padx=8, pady=5)
@@ -249,11 +250,31 @@ class ContingencySolverApp(tk.Tk):
         ttk.Label(controls, textvariable=self.candidate_study_contingency_var).grid(row=3, column=1, columnspan=5, sticky="w", padx=8, pady=(2, 8))
         self.candidate_summary_var = tk.StringVar(value="No candidates generated yet.")
         ttk.Label(page, textvariable=self.candidate_summary_var).pack(anchor="w")
-        self.candidate_tree = self._tree(page, ("From Bus", "From Name", "To Bus", "To Name", "Nominal kV", "Conductor", "Distance miles"))
+        self.candidate_tree = self._tree(
+            page,
+            (
+                "From Bus",
+                "From Name",
+                "To Bus",
+                "To Name",
+                "Nominal kV",
+                "Conductor",
+                "Distance miles",
+                "R ohms",
+                "X ohms",
+                "R pu",
+                "X pu",
+                "Rate A",
+                "Validation",
+            ),
+        )
 
     def _build_run_page(self, page: ttk.Frame) -> None:
-        self._title(page, "Run Screening", "Mock screening populates representative ranked results. Real simulation starts in Phase 4.")
-        ttk.Button(page, text="Run Mock Screening", command=self.run_mock_screening).pack(anchor="w")
+        self._title(page, "Run Screening", "Mock screening is simulated. PowerWorld screening preflight validates the selected real-case setup before candidate branch insertion is enabled.")
+        buttons = ttk.Frame(page)
+        buttons.pack(fill="x", pady=(0, 8))
+        ttk.Button(buttons, text="Run Mock Screening (Simulated)", command=self.run_mock_screening).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Run PowerWorld Screening Preflight", command=self.run_powerworld_preflight).pack(side="left")
         self.progress = ttk.Progressbar(page, mode="determinate")
         self.progress.pack(fill="x", pady=8)
         self.run_log = tk.Text(page, height=18, wrap="word")
@@ -658,11 +679,33 @@ class ContingencySolverApp(tk.Tk):
             maximum_candidates=int(self.max_candidates_var.get()),
         )
         self.candidates, summary = generate_candidates(self.buses, self.branches, self.selected_branch, settings)
+        previews = [preview_candidate_electricals(candidate, self.conductors, self.system_mva_base) for candidate in self.candidates]
         self._set_tree_rows(
             self.candidate_tree,
-            [(c.from_bus, c.from_bus_name, c.to_bus, c.to_bus_name, c.nominal_kv, c.conductor_key, f"{c.distance_miles:.2f}") for c in self.candidates],
+            [
+                (
+                    preview.candidate.from_bus,
+                    preview.candidate.from_bus_name,
+                    preview.candidate.to_bus,
+                    preview.candidate.to_bus_name,
+                    preview.candidate.nominal_kv,
+                    preview.conductor_name or preview.candidate.conductor_key,
+                    f"{preview.candidate.distance_miles:.2f}",
+                    self._format_optional_float(preview.resistance_ohms, 4),
+                    self._format_optional_float(preview.reactance_ohms, 4),
+                    self._format_optional_float(preview.r_pu, 6),
+                    self._format_optional_float(preview.x_pu, 6),
+                    self._format_optional_float(preview.rate_a_mva, 2),
+                    preview.validation_message,
+                )
+                for preview in previews
+            ],
         )
-        self.candidate_summary_var.set(f"Buses found: {summary.buses_found} | Candidate pairs generated: {summary.candidates_generated}")
+        warning_text = f" | {'; '.join(summary.warnings)}" if summary.warnings else ""
+        self.candidate_summary_var.set(
+            f"Buses found: {summary.buses_found} | Candidate pairs generated: {summary.candidates_generated} "
+            f"| candidate cap: {settings.maximum_candidates}{warning_text}"
+        )
         self.candidate_var.set(f"Candidates: {len(self.candidates)}")
         self.run_log.insert("end", f"Generated {len(self.candidates)} candidates.\n")
 
@@ -670,14 +713,85 @@ class ContingencySolverApp(tk.Tk):
         return branch_display(self.selected_branch, self.buses) if self.selected_branch else "(No study branch selected)"
 
     def run_mock_screening(self) -> None:
+        if self.real_case_loaded and not messagebox.askyesno(
+            APP_NAME,
+            "This will run simulated mock screening numbers on a real loaded case.\n\n"
+            "Use this only to test the UI/export workflow. Continue?",
+        ):
+            return
         if not self.candidates:
             self.generate_candidate_preview()
-        self.results = simulate_results(self.candidates)
+        original_loading = self._selected_original_loading_pct()
+        self.results = simulate_results(self.candidates, original_loading)
         self.progress.configure(maximum=max(1, len(self.results)), value=len(self.results))
         self.run_var.set("Run: mock complete")
-        self.run_log.insert("end", f"Mock screening complete. {len(self.results)} results ranked.\n")
-        save_run_history("CTG_102_103_LOSS", "102-103-1", self.settings, self.results)
+        self.run_log.insert(
+            "end",
+            f"Mock screening complete. {len(self.results)} results ranked. Original loading used: {original_loading:.2f}%.\n",
+        )
+        save_run_history(self.selected_contingency_name, self.selected_issue_key, self.settings, self.results)
         self._set_tree_rows(self.results_tree, [tuple(result_to_row(result).values()) for result in self.results])
+
+    def run_powerworld_preflight(self) -> None:
+        if not self.real_case_loaded:
+            messagebox.showwarning(APP_NAME, "Load a real PowerWorld case before running PowerWorld screening preflight.")
+            return
+        if not self.candidates:
+            self.generate_candidate_preview()
+        if not self.candidates:
+            messagebox.showwarning(APP_NAME, "No candidate lines are available to validate.")
+            return
+
+        previews = [preview_candidate_electricals(candidate, self.conductors, self.system_mva_base) for candidate in self.candidates]
+        errors = [preview.validation_message for preview in previews if preview.validation_message != "OK"]
+        missing_context: list[str] = []
+        if not self.selected_contingency_name or self.selected_contingency_name.startswith("("):
+            missing_context.append("selected contingency")
+        if not self.selected_branch or self.selected_branch.from_bus == self.selected_branch.to_bus:
+            missing_context.append("selected study branch")
+        if errors or missing_context:
+            lines = ["PowerWorld screening preflight failed."]
+            if missing_context:
+                lines.append(f"Missing context: {', '.join(missing_context)}")
+            if errors:
+                lines.append("Candidate/conductor validation:")
+                lines.extend(f"- {error}" for error in sorted(set(errors))[:12])
+            text = "\n".join(lines)
+            self.run_log.insert("end", text + "\n")
+            messagebox.showerror(APP_NAME, text)
+            return
+
+        original_loading = self._selected_original_loading_pct()
+        message = (
+            "PowerWorld screening preflight passed.\n\n"
+            f"Selected contingency: {self.selected_contingency_name}\n"
+            f"Selected line issue: {self.selected_issue_key}\n"
+            f"Original selected loading: {original_loading:.2f}%\n"
+            f"Candidate count: {len(self.candidates)}\n\n"
+            "Next implementation step is SimAuto candidate branch insertion and case restoration. "
+            "No candidate has been added to the PowerWorld case by this preflight."
+        )
+        self.run_var.set("Run: real preflight passed")
+        self.progress.configure(maximum=max(1, len(self.candidates)), value=0)
+        self.run_log.insert("end", message + "\n")
+        messagebox.showinfo(APP_NAME, message)
+
+    def _selected_original_loading_pct(self) -> float:
+        selected_detail = self.baseline_detail_tree.selection() if hasattr(self, "baseline_detail_tree") else ()
+        if selected_detail:
+            values = self.baseline_detail_tree.item(selected_detail[0], "values")
+            if len(values) >= 5:
+                return self._safe_float(values[4], 0.0)
+
+        selected_summary = self.baseline_tree.selection() if hasattr(self, "baseline_tree") else ()
+        if selected_summary:
+            values = self.baseline_tree.item(selected_summary[0], "values")
+            if len(values) >= 4:
+                return self._safe_float(values[3], 0.0)
+
+        if self.baseline_summaries:
+            return self.baseline_summaries[0].worst_percent_loading
+        return 0.0
 
     def save_current_conductors(self) -> None:
         errors = validate_conductor_models(self.conductors)
@@ -724,6 +838,17 @@ class ContingencySolverApp(tk.Tk):
         widget.configure(state="normal")
         widget.delete("1.0", "end")
         widget.insert("1.0", text)
+
+    def _format_optional_float(self, value: float | None, decimals: int) -> str:
+        if value is None:
+            return ""
+        return f"{value:.{decimals}f}"
+
+    def _safe_float(self, value: object, default: float) -> float:
+        try:
+            return float(str(value).replace(",", ""))
+        except (TypeError, ValueError):
+            return default
 
     def _readable_error(self, exc: Exception) -> str:
         if isinstance(exc, SimAutoCommandError):
