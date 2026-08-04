@@ -7,6 +7,7 @@ from contingency_solver.core import (
     ThermalViolation,
     VoltageViolation,
     base_impedance_ohms,
+    build_branch_pair_index,
     calculate_line_parameters,
     classify_candidate,
     generate_candidates,
@@ -128,6 +129,30 @@ def test_match_branches_for_issue_by_bus_names() -> None:
     branches = [Branch(101, 102, "1", 115)]
     matches = match_branches_for_issue("North Ridge - South Tap", branches, buses)
     assert matches == branches
+
+
+def test_match_branches_for_issue_by_powerworld_result_text() -> None:
+    buses = [
+        Bus(370490, "3adams T", 115, 40, -82),
+        Bus(370466, "3Ritter!", 115, 40.1, -82.1),
+        Bus(1, "One", 115, 41, -83),
+        Bus(115, "Voltage Named Bus", 115, 41.1, -83.1),
+    ]
+    target = Branch(370490, 370466, "1", 115)
+    branches = [target, Branch(1, 115, "1", 115)]
+    index = build_branch_pair_index(branches)
+    matches = match_branches_for_issue("370490 3adams T - 370466 3Ritter! ckt 1 115kv", branches, buses, index)
+    assert matches == [target]
+
+
+def test_match_branches_for_issue_uses_numeric_index_on_large_case() -> None:
+    buses = [Bus(number, f"Bus {number}", 115, 40, -82) for number in range(1, 5002)]
+    branches = [Branch(number, number + 1, "1", 115) for number in range(1, 5000)]
+    target = Branch(3700, 3701, "1", 115)
+    branches.append(target)
+    index = build_branch_pair_index(branches)
+    matches = match_branches_for_issue("3700 Bus 3700 - 3701 Bus 3701 ckt 1", branches, buses, index)
+    assert matches[0] == target
 
 
 def test_conductor_validation() -> None:
