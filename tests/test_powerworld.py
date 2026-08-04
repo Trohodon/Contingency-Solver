@@ -16,6 +16,8 @@ from contingency_solver.powerworld import (
 
 class FakeClient:
     def __init__(self) -> None:
+        self.commands: list[str] = []
+        self.opened_cases: list[str] = []
         self.available = {
             "Bus": {"BusNum", "BusName", "BusNomVolt", "Latitude", "Longitude", "Status"},
             "Branch": {"BusNum", "BusNum:1", "LineCircuit", "Status"},
@@ -53,7 +55,11 @@ class FakeClient:
         return [{field: row[field] for field in fields} for row in self.rows[object_type]]
 
     def run_script_command(self, command: str) -> None:
+        self.commands.append(command)
         return None
+
+    def open_case(self, path: Path) -> None:
+        self.opened_cases.append(str(path))
 
 
 def schema() -> PowerWorldSchema:
@@ -107,7 +113,10 @@ def schema() -> PowerWorldSchema:
                     },
                 },
             },
-            "script_commands": {"load_aux": "LoadAux(\"{aux_path}\")"},
+            "script_commands": {
+                "load_aux": "LoadAux(\"{aux_path}\")",
+                "solve_power_flow": "SolvePowerFlow(RECTNEWT)",
+            },
         }
     )
 
@@ -164,3 +173,17 @@ def test_candidate_branch_aux_uses_powerworld_line_fields() -> None:
     assert "LineR,LineX,LineC,LineMVA,LineMVA:1,LineMVA:2" in aux
     assert '101 102 "CS1" "Closed"' in aux
     assert "237.03 254.20 314.61" in aux
+
+
+def test_probe_add_candidate_and_solve_runs_load_aux_solve_and_reload(tmp_path: Path) -> None:
+    fake = FakeClient()
+    reader = PowerWorldReader(fake, schema())  # type: ignore[arg-type]
+    candidate = CandidateLine(101, "A", 102, "B", 115.0, "115", 10.0)
+    model = ConductorModel("115", "115 kV 1272 ACSR BITTERN", 115.0, 1, 0.0832, 0.378, "capacitive_reactance_megaohm_mile", 0.0855, 237.03, 254.2, 314.61)
+
+    attempts = reader.probe_add_candidate_and_solve(tmp_path / "working.pwb", candidate, model, 100.0)
+
+    assert [attempt.filter_name for attempt in attempts] == ["candidate_probe", "intact_solve_probe"]
+    assert any(command.startswith("LoadAux(") for command in fake.commands)
+    assert "SolvePowerFlow(RECTNEWT)" in fake.commands
+    assert fake.opened_cases == [str(tmp_path / "working.pwb")]
