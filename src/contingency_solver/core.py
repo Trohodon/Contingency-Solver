@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from itertools import combinations
 from math import asin, cos, radians, sin, sqrt
+import re
 from typing import Any
 
 SUPPORTED_VOLTAGES = (115.0, 230.0)
@@ -405,6 +406,54 @@ def summarize_thermal_by_line(violations: list[ThermalViolation]) -> list[LineLo
         )
     summaries.sort(key=lambda item: item.worst_percent_loading, reverse=True)
     return summaries
+
+
+def branch_display(branch: Branch, buses: list[Bus]) -> str:
+    bus_by_number = {bus.number: bus for bus in buses}
+    left = bus_by_number.get(branch.from_bus)
+    right = bus_by_number.get(branch.to_bus)
+    left_label = f"{branch.from_bus} {left.name}" if left else str(branch.from_bus)
+    right_label = f"{branch.to_bus} {right.name}" if right else str(branch.to_bus)
+    kv = f" {branch.nominal_kv:.0f} kV" if branch.nominal_kv else ""
+    return f"{left_label} - {right_label} ckt {branch.circuit_id}{kv}"
+
+
+def match_branches_for_issue(issue_text: str, branches: list[Branch], buses: list[Bus]) -> list[Branch]:
+    scored: list[tuple[int, Branch]] = []
+    for branch in branches:
+        score = _branch_issue_match_score(issue_text, branch, buses)
+        if score > 0:
+            scored.append((score, branch))
+    scored.sort(key=lambda item: (-item[0], item[1].from_bus, item[1].to_bus, item[1].circuit_id))
+    return [branch for _score, branch in scored]
+
+
+def _branch_issue_match_score(issue_text: str, branch: Branch, buses: list[Bus]) -> int:
+    text = _normalize_issue_text(issue_text)
+    numbers = set(re.findall(r"\d+", issue_text))
+    bus_by_number = {bus.number: bus for bus in buses}
+    left = bus_by_number.get(branch.from_bus)
+    right = bus_by_number.get(branch.to_bus)
+
+    score = 0
+    if str(branch.from_bus) in numbers and str(branch.to_bus) in numbers:
+        score += 100
+    if left and right and _contains_name(text, left.name) and _contains_name(text, right.name):
+        score += 80
+    if branch.circuit_id and branch.circuit_id.lower() in text:
+        score += 10
+    if score and branch.nominal_kv is not None and str(int(round(branch.nominal_kv))) in numbers:
+        score += 5
+    return score
+
+
+def _contains_name(normalized_text: str, name: str) -> bool:
+    normalized_name = _normalize_issue_text(name)
+    return bool(normalized_name) and normalized_name in normalized_text
+
+
+def _normalize_issue_text(value: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", value.lower()).split())
 
 
 def validate_conductor_models(models: dict[str, ConductorModel]) -> list[str]:
