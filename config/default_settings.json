@@ -5,6 +5,7 @@
   "maximum_line_length_miles": 50.0,
   "study_area_mode": "endpoints",
   "maximum_candidates": 250,
+  "use_temporary_powerworld_working_copy": true,
   "thermal_results_min_loading_pct": 90.0,
   "meaningful_improvement_threshold_pct_points": 2.0,
   "score_weights": {
