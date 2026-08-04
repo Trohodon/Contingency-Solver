@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from contingency_solver.core import Branch, Bus, Contingency, ThermalViolation
+from contingency_solver.core import Branch, Bus, CandidateLine, ConductorModel, Contingency, ThermalViolation, calculate_line_parameters
 from contingency_solver.storage import CONFIG_DIR
 
 LOGGER = logging.getLogger(__name__)
@@ -69,6 +69,9 @@ class PowerWorldSchema:
 
     def query_filters(self, object_name: str) -> list[str]:
         return [str(value) for value in self.raw["objects"][object_name].get("query_filters", [""])]
+
+    def script_command(self, command_name: str) -> str:
+        return str(self.raw.get("script_commands", {})[command_name])
 
     def alternatives(self, object_name: str, field_name: str) -> list[str]:
         return list(self.raw["objects"][object_name]["fields"][field_name])
@@ -210,6 +213,49 @@ class PowerWorldReader:
 
     def open_case(self, path: Path) -> None:
         self.client.open_case(path)
+
+    def reload_case(self, path: Path) -> None:
+        self.client.open_case(path)
+
+    def probe_add_candidate_branch(
+        self,
+        working_case_path: Path,
+        candidate: CandidateLine,
+        conductor_model: ConductorModel,
+        system_mva_base: float,
+    ) -> QueryAttempt:
+        params = calculate_line_parameters(conductor_model, candidate.distance_miles, system_mva_base)
+        aux_text = build_candidate_branch_aux(candidate, conductor_model, params)
+        with tempfile.NamedTemporaryFile(prefix="contingency_solver_candidate_", suffix=".aux", mode="w", encoding="utf-8", delete=False) as handle:
+            aux_path = Path(handle.name)
+            handle.write(aux_text)
+        command = self.schema.script_command("load_aux").format(aux_path=str(aux_path).replace("\\", "/"))
+        try:
+            self.client.run_script_command(command)
+            return QueryAttempt(
+                object_type="Branch",
+                filter_name="candidate_probe",
+                fields=("BusNum", "BusNum:1", "LineCircuit", "LineR", "LineX", "LineC", "LineMVA", "LineMVA:1", "LineMVA:2"),
+                row_count=1,
+                raw_summary=f"AUX loaded from {aux_path}; command={command}; candidate branch circuit=CS1",
+            )
+        except Exception as exc:
+            return QueryAttempt(
+                object_type="Branch",
+                filter_name="candidate_probe",
+                fields=("BusNum", "BusNum:1", "LineCircuit", "LineR", "LineX", "LineC", "LineMVA", "LineMVA:1", "LineMVA:2"),
+                row_count=0,
+                raw_summary=f"AUX path={aux_path}; command={command}; aux={aux_text}",
+                error=str(exc),
+            )
+        finally:
+            try:
+                self.reload_case(working_case_path)
+            finally:
+                try:
+                    aux_path.unlink(missing_ok=True)
+                except Exception:
+                    LOGGER.warning("Could not remove temporary candidate AUX file %s.", aux_path)
 
     def read_buses(self) -> list[Bus]:
         buses, _attempt = self.read_buses_with_diagnostics()
@@ -423,6 +469,24 @@ class PowerWorldReader:
         rows = self.client.get_rows(object_type, fields, filter_name)
         values = [tuple(row.get(field) for field in fields) for row in rows]
         return SimAutoResponse("GetParametersMultipleElement", ("", tuple(fields), tuple(values)), "", (tuple(fields), tuple(values)))
+
+
+def build_candidate_branch_aux(candidate: CandidateLine, model: ConductorModel, params: Any) -> str:
+    return "\n".join(
+        [
+            "// Contingency Solver temporary candidate branch probe",
+            "// This AUX must only be loaded into a temporary working copy.",
+            "DATA (Branch, [BusNum,BusNum:1,LineCircuit,LineStatus,LineLength,BranchDeviceType,LineXfmr,",
+            "LineR,LineX,LineC,LineMVA,LineMVA:1,LineMVA:2], YES)",
+            "{",
+            f"\t{candidate.from_bus} {candidate.to_bus} \"CS1\" \"Closed\" {candidate.distance_miles:.6f} \"Line\" \"NO\" "
+            f"{params.r_pu:.8f} {params.x_pu:.8f} {params.charging_pu:.8f} "
+            f"{params.rate_a_mva:.2f} {params.rate_b_mva:.2f} {params.rate_c_mva:.2f} "
+            f"// \"{candidate.from_bus_name}\" \"{candidate.to_bus_name}\" \"{model.name}\"",
+            "}",
+            "",
+        ]
+    )
 
 
 def records_from_response(fields: list[str], payload: tuple[Any, ...]) -> list[dict[str, Any]]:
