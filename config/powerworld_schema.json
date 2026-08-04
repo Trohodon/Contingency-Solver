@@ -58,6 +58,7 @@
   },
   "script_commands": {
     "solve_power_flow": "SolvePowerFlow(RECTNEWT)",
-    "run_contingency": "CTGRun(\"{contingency_name}\")"
+    "run_contingency": "CTGRun(\"{contingency_name}\")",
+    "load_aux": "LoadAux(\"{aux_path}\")"
   }
 }
