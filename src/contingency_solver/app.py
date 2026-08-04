@@ -14,7 +14,9 @@ from contingency_solver.core import (
     CandidateSettings,
     ConductorModel,
     LineLoadingSummary,
+    branch_display,
     generate_candidates,
+    match_branches_for_issue,
     result_to_row,
     summarize_thermal_by_line,
     validate_conductor_models,
@@ -79,6 +81,7 @@ class ContingencySolverApp(tk.Tk):
         self.baseline_summaries: list[LineLoadingSummary] = summarize_thermal_by_line(self.baseline_overloads)
         self.voltage_violations = mock_voltage_violations()
         self.selected_branch = self.branches[1]
+        self.selected_issue_key = self.selected_branch_label()
         self.candidates: list[CandidateLine] = []
         self.results: list[CandidateResult] = []
         self.case_summary_message = "Mock data loaded."
@@ -205,6 +208,11 @@ class ContingencySolverApp(tk.Tk):
         ttk.Label(page, text="Line/Transformer Summary").pack(anchor="w", pady=(0, 4))
         self.baseline_tree = self._tree(page, ("Line/Transformer", "Contingency Count", "Worst Contingency", "Worst %", "Worst Value", "Worst Limit"), height=8)
         self.baseline_tree.bind("<<TreeviewSelect>>", lambda _event: self._fill_selected_line_details())
+        baseline_buttons = ttk.Frame(page)
+        baseline_buttons.pack(fill="x", pady=(4, 8))
+        ttk.Button(baseline_buttons, text="Use Selected Line Issue for Candidate Setup", command=self.use_selected_line_issue).pack(side="left")
+        self.selected_issue_var = tk.StringVar(value=f"Selected study branch: {self.selected_issue_key}")
+        ttk.Label(baseline_buttons, textvariable=self.selected_issue_var).pack(side="left", padx=(12, 0))
         ttk.Label(page, text="Selected Line/Transformer Contingency Details").pack(anchor="w", pady=(10, 4))
         self.baseline_detail_tree = self._tree(page, ("Contingency", "Category", "Limit", "Value", "% Loading"), height=8)
         ttk.Label(page, text="Voltage Violations are de-prioritized for now.").pack(anchor="w", pady=(10, 4))
@@ -232,6 +240,8 @@ class ContingencySolverApp(tk.Tk):
             ttk.Label(controls, text=label).grid(row=index // 3, column=(index % 3) * 2, sticky="w", padx=8, pady=5)
             widget.grid(row=index // 3, column=(index % 3) * 2 + 1, sticky="w", padx=8, pady=5)
         ttk.Button(controls, text="Generate Candidates", command=self.generate_candidate_preview).grid(row=2, column=0, padx=8, pady=8, sticky="w")
+        self.candidate_study_branch_var = tk.StringVar(value=f"Study branch: {self.selected_issue_key}")
+        ttk.Label(controls, textvariable=self.candidate_study_branch_var).grid(row=2, column=1, columnspan=5, sticky="w", padx=8, pady=8)
         self.candidate_summary_var = tk.StringVar(value="No candidates generated yet.")
         ttk.Label(page, textvariable=self.candidate_summary_var).pack(anchor="w")
         self.candidate_tree = self._tree(page, ("From Bus", "From Name", "To Bus", "To Name", "Nominal kV", "Conductor", "Distance miles"))
@@ -398,6 +408,81 @@ class ContingencySolverApp(tk.Tk):
             ],
         )
 
+    def use_selected_line_issue(self) -> None:
+        selected = self.baseline_tree.selection()
+        if not selected:
+            messagebox.showwarning(APP_NAME, "Select a line/transformer issue in Baseline Results first.")
+            return
+
+        issue_key = str(self.baseline_tree.item(selected[0], "values")[0])
+        matches = match_branches_for_issue(issue_key, self.branches, self.buses)
+        if not matches:
+            messagebox.showwarning(
+                APP_NAME,
+                "Could not match this result row back to a branch in the case.\n\n"
+                f"Result text:\n{issue_key}\n\n"
+                "This usually means the PowerWorld result text does not include both bus numbers or both bus names.",
+            )
+            return
+
+        branch = matches[0] if len(matches) == 1 else self._choose_branch_match(issue_key, matches)
+        if branch is None:
+            return
+
+        self.selected_branch = branch
+        self.selected_issue_key = issue_key
+        label = f"Selected study branch: {branch_display(branch, self.buses)}"
+        self.selected_issue_var.set(label)
+        self.candidate_study_branch_var.set(f"Study branch: {branch_display(branch, self.buses)}")
+        self.candidates = []
+        self.candidate_var.set("Candidates: 0")
+        self._set_tree_rows(self.candidate_tree, [])
+        self.candidate_summary_var.set("Study branch selected. Generate candidates to preview nearby additions.")
+        self._select_nav_page("Candidate Setup")
+
+    def _choose_branch_match(self, issue_key: str, matches: list[Branch]) -> Branch | None:
+        dialog = tk.Toplevel(self)
+        dialog.title("Select Matching Branch")
+        dialog.geometry("760x320")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text=f"Multiple branches match:\n{issue_key}", wraplength=720).pack(anchor="w", padx=10, pady=(10, 6))
+        listbox = tk.Listbox(dialog, height=9, exportselection=False)
+        listbox.pack(fill="both", expand=True, padx=10, pady=6)
+        for branch in matches[:200]:
+            listbox.insert(tk.END, branch_display(branch, self.buses))
+        listbox.selection_set(0)
+
+        selected: list[Branch | None] = [None]
+
+        def accept() -> None:
+            selection = listbox.curselection()
+            if selection:
+                selected[0] = matches[selection[0]]
+            dialog.destroy()
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Button(buttons, text="Use Selected Branch", command=accept).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Cancel", command=cancel).pack(side="left")
+        listbox.bind("<Double-Button-1>", lambda _event: accept())
+        self.wait_window(dialog)
+        return selected[0]
+
+    def _select_nav_page(self, page_name: str) -> None:
+        names = list(self.page_frames.keys())
+        if page_name not in names:
+            return
+        index = names.index(page_name)
+        self.nav_list.selection_clear(0, tk.END)
+        self.nav_list.selection_set(index)
+        self.nav_list.see(index)
+        self.page_frames[page_name].tkraise()
+
     def _fill_conductors(self) -> None:
         self._set_tree_rows(
             self.conductor_tree,
@@ -468,11 +553,14 @@ class ContingencySolverApp(tk.Tk):
             return
         self.real_case_loaded = True
         self.selected_branch = self.branches[0] if self.branches else Branch(0, 0)
+        self.selected_issue_key = self.selected_branch_label()
         self.candidates = []
         self.results = []
         self.case_var.set(f"Case: {path.name}")
         self.connection_var.set("PowerWorld: connected")
         self.case_summary_message = self._case_load_summary(path, bus_attempt, branch_attempt, ctg_attempts, violation_attempts)
+        self.selected_issue_var.set(f"Selected study branch: {self.selected_issue_key}")
+        self.candidate_study_branch_var.set(f"Study branch: {self.selected_issue_key}")
         self._refresh_all()
         if not self.buses or not self.branches or not self.baseline_overloads:
             messagebox.showwarning(
@@ -489,6 +577,7 @@ class ContingencySolverApp(tk.Tk):
         self.baseline_summaries = summarize_thermal_by_line(self.baseline_overloads)
         self.voltage_violations = mock_voltage_violations()
         self.selected_branch = self.branches[1]
+        self.selected_issue_key = self.selected_branch_label()
         self.candidates = []
         self.results = []
         self.real_case_loaded = False
@@ -499,6 +588,8 @@ class ContingencySolverApp(tk.Tk):
         self.case_var.set("Case: Mock sample case")
         self.candidate_var.set("Candidates: 0")
         self.case_summary_message = "Mock data loaded."
+        self.selected_issue_var.set(f"Selected study branch: {self.selected_issue_key}")
+        self.candidate_study_branch_var.set(f"Study branch: {self.selected_issue_key}")
         self._refresh_all()
 
     def save_settings_from_ui(self) -> None:
@@ -538,6 +629,9 @@ class ContingencySolverApp(tk.Tk):
         self.candidate_summary_var.set(f"Buses found: {summary.buses_found} | Candidate pairs generated: {summary.candidates_generated}")
         self.candidate_var.set(f"Candidates: {len(self.candidates)}")
         self.run_log.insert("end", f"Generated {len(self.candidates)} candidates.\n")
+
+    def selected_branch_label(self) -> str:
+        return branch_display(self.selected_branch, self.buses) if self.selected_branch else "(No study branch selected)"
 
     def run_mock_screening(self) -> None:
         if not self.candidates:
