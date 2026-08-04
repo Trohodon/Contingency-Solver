@@ -8,6 +8,7 @@ from contingency_solver.core import (
     ThermalViolation,
     VoltageViolation,
     base_impedance_ohms,
+    calculate_total_line_charging,
     build_branch_pair_index,
     calculate_line_parameters,
     classify_candidate,
@@ -79,6 +80,11 @@ def test_electrical_calculations() -> None:
     model = ConductorModel("115", "test", 115.0, 1, 0.08, 0.42, "susceptance_per_mile", 0.000003, 180, 220, 260)
     params = calculate_line_parameters(model, 10.0, 100.0)
     assert round(params.r_pu, 6) == round(0.8 / 132.25, 6)
+
+
+def test_capacitive_reactance_charging_conversion() -> None:
+    charging = calculate_total_line_charging("capacitive_reactance_megaohm_mile", 0.0855, 10.0)
+    assert round(charging, 9) == round(10.0 / (0.0855 * 1_000_000.0), 9)
 
 
 def test_candidate_electrical_preview() -> None:
