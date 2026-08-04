@@ -206,6 +206,18 @@ class LineElectricalParameters:
 
 
 @dataclass(frozen=True)
+class CandidateElectricalPreview:
+    candidate: CandidateLine
+    conductor_name: str
+    resistance_ohms: float | None
+    reactance_ohms: float | None
+    r_pu: float | None
+    x_pu: float | None
+    rate_a_mva: float | None
+    validation_message: str
+
+
+@dataclass(frozen=True)
 class ScoreWeights:
     loading_reduction: float = 2.0
     overload_removed_bonus: float = 35.0
@@ -316,6 +328,30 @@ def calculate_line_parameters(model: ConductorModel, length_miles: float, system
         float(model.rate_a_mva),
         float(model.rate_b_mva),
         float(model.rate_c_mva),
+    )
+
+
+def preview_candidate_electricals(
+    candidate: CandidateLine,
+    conductor_models: dict[str, ConductorModel],
+    system_mva_base: float,
+) -> CandidateElectricalPreview:
+    model = conductor_models.get(candidate.conductor_key)
+    if model is None:
+        return CandidateElectricalPreview(candidate, "", None, None, None, None, None, f"No conductor model for {candidate.conductor_key} kV.")
+    try:
+        params = calculate_line_parameters(model, candidate.distance_miles, system_mva_base)
+    except ValueError as exc:
+        return CandidateElectricalPreview(candidate, model.name, None, None, None, None, model.rate_a_mva, str(exc))
+    return CandidateElectricalPreview(
+        candidate=candidate,
+        conductor_name=model.name,
+        resistance_ohms=params.resistance_ohms,
+        reactance_ohms=params.reactance_ohms,
+        r_pu=params.r_pu,
+        x_pu=params.x_pu,
+        rate_a_mva=params.rate_a_mva,
+        validation_message="OK",
     )
 
 
