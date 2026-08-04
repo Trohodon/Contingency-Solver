@@ -257,6 +257,80 @@ class PowerWorldReader:
                 except Exception:
                     LOGGER.warning("Could not remove temporary candidate AUX file %s.", aux_path)
 
+    def probe_add_candidate_and_solve(
+        self,
+        working_case_path: Path,
+        candidate: CandidateLine,
+        conductor_model: ConductorModel,
+        system_mva_base: float,
+    ) -> list[QueryAttempt]:
+        attempts = [
+            self.probe_add_candidate_branch_without_restore(candidate, conductor_model, system_mva_base)
+        ]
+        try:
+            if attempts[0].error:
+                return attempts
+            command = self.schema.script_command("solve_power_flow")
+            try:
+                self.client.run_script_command(command)
+                attempts.append(
+                    QueryAttempt(
+                        object_type="PowerFlow",
+                        filter_name="intact_solve_probe",
+                        row_count=1,
+                        raw_summary=f"command={command}",
+                    )
+                )
+            except Exception as exc:
+                attempts.append(
+                    QueryAttempt(
+                        object_type="PowerFlow",
+                        filter_name="intact_solve_probe",
+                        row_count=0,
+                        raw_summary=f"command={command}",
+                        error=str(exc),
+                    )
+                )
+        finally:
+            self.reload_case(working_case_path)
+        return attempts
+
+    def probe_add_candidate_branch_without_restore(
+        self,
+        candidate: CandidateLine,
+        conductor_model: ConductorModel,
+        system_mva_base: float,
+    ) -> QueryAttempt:
+        params = calculate_line_parameters(conductor_model, candidate.distance_miles, system_mva_base)
+        aux_text = build_candidate_branch_aux(candidate, conductor_model, params)
+        with tempfile.NamedTemporaryFile(prefix="contingency_solver_candidate_", suffix=".aux", mode="w", encoding="utf-8", delete=False) as handle:
+            aux_path = Path(handle.name)
+            handle.write(aux_text)
+        command = self.schema.script_command("load_aux").format(aux_path=str(aux_path).replace("\\", "/"))
+        try:
+            self.client.run_script_command(command)
+            return QueryAttempt(
+                object_type="Branch",
+                filter_name="candidate_probe",
+                fields=("BusNum", "BusNum:1", "LineCircuit", "LineR", "LineX", "LineC", "LineMVA", "LineMVA:1", "LineMVA:2"),
+                row_count=1,
+                raw_summary=f"AUX loaded from {aux_path}; command={command}; candidate branch circuit=CS1",
+            )
+        except Exception as exc:
+            return QueryAttempt(
+                object_type="Branch",
+                filter_name="candidate_probe",
+                fields=("BusNum", "BusNum:1", "LineCircuit", "LineR", "LineX", "LineC", "LineMVA", "LineMVA:1", "LineMVA:2"),
+                row_count=0,
+                raw_summary=f"AUX path={aux_path}; command={command}; aux={aux_text}",
+                error=str(exc),
+            )
+        finally:
+            try:
+                aux_path.unlink(missing_ok=True)
+            except Exception:
+                LOGGER.warning("Could not remove temporary candidate AUX file %s.", aux_path)
+
     def read_buses(self) -> list[Bus]:
         buses, _attempt = self.read_buses_with_diagnostics()
         return buses
