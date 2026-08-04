@@ -11,6 +11,7 @@ from contingency_solver.core import (
     classify_candidate,
     generate_candidates,
     haversine_miles,
+    match_branches_for_issue,
     new_thermal_violations,
     new_voltage_violations,
     ohms_to_per_unit,
@@ -113,6 +114,20 @@ def test_summarize_thermal_by_line_groups_multiple_contingencies_on_same_issue()
     assert summaries[0].result_count == 2
     assert summaries[0].worst_contingency == "CTG2"
     assert summaries[0].worst_percent_loading == 98
+
+
+def test_match_branches_for_issue_by_bus_numbers() -> None:
+    buses = [Bus(101, "North", 115, 40, -82), Bus(102, "South", 115, 40.1, -82.1)]
+    branches = [Branch(101, 102, "1", 115)]
+    matches = match_branches_for_issue("Line 101 to 102 circuit 1", branches, buses)
+    assert matches == branches
+
+
+def test_match_branches_for_issue_by_bus_names() -> None:
+    buses = [Bus(101, "North Ridge", 115, 40, -82), Bus(102, "South Tap", 115, 40.1, -82.1)]
+    branches = [Branch(101, 102, "1", 115)]
+    matches = match_branches_for_issue("North Ridge - South Tap", branches, buses)
+    assert matches == branches
 
 
 def test_conductor_validation() -> None:
