@@ -3,10 +3,12 @@ from pathlib import Path
 
 import pytest
 
+from contingency_solver.core import CandidateLine, ConductorModel, calculate_line_parameters
 from contingency_solver.powerworld import (
     PowerWorldReader,
     PowerWorldSchema,
     SchemaResolutionError,
+    build_candidate_branch_aux,
     records_from_powerworld_csv,
     records_from_response,
 )
@@ -104,7 +106,8 @@ def schema() -> PowerWorldSchema:
                         "category": ["LimViolCat"],
                     },
                 },
-            }
+            },
+            "script_commands": {"load_aux": "LoadAux(\"{aux_path}\")"},
         }
     )
 
@@ -150,3 +153,14 @@ def test_reader_keeps_near_overloads_when_threshold_is_90() -> None:
     violations, _attempts = reader.read_thermal_violations_with_diagnostics(90.0)
     assert len(violations) == 1
     assert violations[0].percent_loading == 96.5
+
+
+def test_candidate_branch_aux_uses_powerworld_line_fields() -> None:
+    candidate = CandidateLine(101, "A", 102, "B", 115.0, "115", 10.0)
+    model = ConductorModel("115", "115 kV 1272 ACSR BITTERN", 115.0, 1, 0.0832, 0.378, "capacitive_reactance_megaohm_mile", 0.0855, 237.03, 254.2, 314.61)
+    params = calculate_line_parameters(model, candidate.distance_miles, 100.0)
+    aux = build_candidate_branch_aux(candidate, model, params)
+    assert "DATA (Branch" in aux
+    assert "LineR,LineX,LineC,LineMVA,LineMVA:1,LineMVA:2" in aux
+    assert '101 102 "CS1" "Closed"' in aux
+    assert "237.03 254.20 314.61" in aux
