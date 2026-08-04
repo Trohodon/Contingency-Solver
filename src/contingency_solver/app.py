@@ -267,6 +267,7 @@ class ContingencySolverApp(tk.Tk):
                 "X ohms",
                 "R pu",
                 "X pu",
+                "LineC pu",
                 "Rate A",
                 "Validation",
             ),
@@ -277,7 +278,8 @@ class ContingencySolverApp(tk.Tk):
         buttons = ttk.Frame(page)
         buttons.pack(fill="x", pady=(0, 8))
         ttk.Button(buttons, text="Run Mock Screening (Simulated)", command=self.run_mock_screening).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Run PowerWorld Screening Preflight", command=self.run_powerworld_preflight).pack(side="left")
+        ttk.Button(buttons, text="Run PowerWorld Screening Preflight", command=self.run_powerworld_preflight).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Probe Add One Candidate", command=self.probe_add_one_candidate).pack(side="left")
         self.progress = ttk.Progressbar(page, mode="determinate")
         self.progress.pack(fill="x", pady=8)
         self.run_log = tk.Text(page, height=18, wrap="word")
@@ -703,6 +705,7 @@ class ContingencySolverApp(tk.Tk):
                     self._format_optional_float(preview.reactance_ohms, 4),
                     self._format_optional_float(preview.r_pu, 6),
                     self._format_optional_float(preview.x_pu, 6),
+                    self._format_optional_float(preview.charging_pu, 6),
                     self._format_optional_float(preview.rate_a_mva, 2),
                     preview.validation_message,
                 )
@@ -783,6 +786,65 @@ class ContingencySolverApp(tk.Tk):
         self.progress.configure(maximum=max(1, len(self.candidates)), value=0)
         self.run_log.insert("end", message + "\n")
         messagebox.showinfo(APP_NAME, message)
+
+    def probe_add_one_candidate(self) -> None:
+        if not self.real_case_loaded or self.working_case_path is None:
+            messagebox.showwarning(APP_NAME, "Load a real PowerWorld case before probing a candidate branch.")
+            return
+        if not self.candidates:
+            self.generate_candidate_preview()
+        if not self.candidates:
+            messagebox.showwarning(APP_NAME, "No candidate lines are available to probe.")
+            return
+
+        candidate = self._selected_candidate_or_first()
+        conductor_model = self.conductors.get(candidate.conductor_key)
+        if conductor_model is None:
+            messagebox.showerror(APP_NAME, f"No conductor model is configured for {candidate.conductor_key} kV.")
+            return
+        preview = preview_candidate_electricals(candidate, self.conductors, self.system_mva_base)
+        if preview.validation_message != "OK":
+            messagebox.showerror(APP_NAME, preview.validation_message)
+            return
+
+        try:
+            attempt = self.powerworld.probe_add_candidate_branch(
+                self.working_case_path,
+                candidate,
+                conductor_model,
+                self.system_mva_base,
+            )
+        except (SimAutoUnavailableError, SimAutoCommandError, ValueError) as exc:
+            LOGGER.exception("Candidate branch probe failed.")
+            messagebox.showerror(APP_NAME, self._readable_error(exc))
+            return
+
+        text = self._format_attempt(attempt)
+        self.run_log.insert("end", f"Candidate branch probe result:\n{text}\n")
+        if getattr(attempt, "error", ""):
+            messagebox.showerror(
+                APP_NAME,
+                "Candidate branch probe failed. The working case was reloaded after the attempt.\n\n"
+                f"{getattr(attempt, 'error', '')}\n\n"
+                "Open Logs or copy the Run Screening log so the PowerWorld command can be adjusted.",
+            )
+            return
+        messagebox.showinfo(
+            APP_NAME,
+            "Candidate branch probe succeeded on the temporary working copy.\n\n"
+            "The working copy was reloaded immediately after the probe so the candidate branch does not remain in the open case.",
+        )
+
+    def _selected_candidate_or_first(self) -> CandidateLine:
+        selected = self.candidate_tree.selection() if hasattr(self, "candidate_tree") else ()
+        if selected:
+            children = list(self.candidate_tree.get_children(""))
+            try:
+                index = children.index(selected[0])
+                return self.candidates[index]
+            except (ValueError, IndexError):
+                pass
+        return self.candidates[0]
 
     def _selected_original_loading_pct(self) -> float:
         selected_detail = self.baseline_detail_tree.selection() if hasattr(self, "baseline_detail_tree") else ()
