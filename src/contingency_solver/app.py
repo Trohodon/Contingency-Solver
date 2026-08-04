@@ -279,7 +279,8 @@ class ContingencySolverApp(tk.Tk):
         buttons.pack(fill="x", pady=(0, 8))
         ttk.Button(buttons, text="Run Mock Screening (Simulated)", command=self.run_mock_screening).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Run PowerWorld Screening Preflight", command=self.run_powerworld_preflight).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Probe Add One Candidate", command=self.probe_add_one_candidate).pack(side="left")
+        ttk.Button(buttons, text="Probe Add One Candidate", command=self.probe_add_one_candidate).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Probe Add + Solve Intact", command=self.probe_add_and_solve_one_candidate).pack(side="left")
         self.progress = ttk.Progressbar(page, mode="determinate")
         self.progress.pack(fill="x", pady=8)
         self.run_log = tk.Text(page, height=18, wrap="word")
@@ -788,24 +789,10 @@ class ContingencySolverApp(tk.Tk):
         messagebox.showinfo(APP_NAME, message)
 
     def probe_add_one_candidate(self) -> None:
-        if not self.real_case_loaded or self.working_case_path is None:
-            messagebox.showwarning(APP_NAME, "Load a real PowerWorld case before probing a candidate branch.")
+        prepared = self._prepare_candidate_probe()
+        if prepared is None:
             return
-        if not self.candidates:
-            self.generate_candidate_preview()
-        if not self.candidates:
-            messagebox.showwarning(APP_NAME, "No candidate lines are available to probe.")
-            return
-
-        candidate = self._selected_candidate_or_first()
-        conductor_model = self.conductors.get(candidate.conductor_key)
-        if conductor_model is None:
-            messagebox.showerror(APP_NAME, f"No conductor model is configured for {candidate.conductor_key} kV.")
-            return
-        preview = preview_candidate_electricals(candidate, self.conductors, self.system_mva_base)
-        if preview.validation_message != "OK":
-            messagebox.showerror(APP_NAME, preview.validation_message)
-            return
+        candidate, conductor_model = prepared
 
         try:
             attempt = self.powerworld.probe_add_candidate_branch(
@@ -834,6 +821,62 @@ class ContingencySolverApp(tk.Tk):
             "Candidate branch probe succeeded on the temporary working copy.\n\n"
             "The working copy was reloaded immediately after the probe so the candidate branch does not remain in the open case.",
         )
+
+    def probe_add_and_solve_one_candidate(self) -> None:
+        prepared = self._prepare_candidate_probe()
+        if prepared is None:
+            return
+        candidate, conductor_model = prepared
+
+        try:
+            attempts = self.powerworld.probe_add_candidate_and_solve(
+                self.working_case_path,
+                candidate,
+                conductor_model,
+                self.system_mva_base,
+            )
+        except (SimAutoUnavailableError, SimAutoCommandError, ValueError) as exc:
+            LOGGER.exception("Candidate add and intact solve probe failed.")
+            messagebox.showerror(APP_NAME, self._readable_error(exc))
+            return
+
+        text = "\n".join(self._format_attempt(attempt) for attempt in attempts)
+        self.run_log.insert("end", f"Candidate add + intact solve probe result:\n{text}\n")
+        errors = [attempt.error for attempt in attempts if attempt.error]
+        if errors:
+            messagebox.showerror(
+                APP_NAME,
+                "Candidate add + intact solve probe failed. The working case was reloaded after the attempt.\n\n"
+                f"{errors[-1]}\n\n"
+                "Open Logs or copy the Run Screening log so the PowerWorld command can be adjusted.",
+            )
+            return
+        messagebox.showinfo(
+            APP_NAME,
+            "Candidate add + intact solve probe succeeded on the temporary working copy.\n\n"
+            "The working copy was reloaded immediately after the probe so the candidate branch does not remain in the open case.",
+        )
+
+    def _prepare_candidate_probe(self) -> tuple[CandidateLine, ConductorModel] | None:
+        if not self.real_case_loaded or self.working_case_path is None:
+            messagebox.showwarning(APP_NAME, "Load a real PowerWorld case before probing a candidate branch.")
+            return None
+        if not self.candidates:
+            self.generate_candidate_preview()
+        if not self.candidates:
+            messagebox.showwarning(APP_NAME, "No candidate lines are available to probe.")
+            return None
+
+        candidate = self._selected_candidate_or_first()
+        conductor_model = self.conductors.get(candidate.conductor_key)
+        if conductor_model is None:
+            messagebox.showerror(APP_NAME, f"No conductor model is configured for {candidate.conductor_key} kV.")
+            return None
+        preview = preview_candidate_electricals(candidate, self.conductors, self.system_mva_base)
+        if preview.validation_message != "OK":
+            messagebox.showerror(APP_NAME, preview.validation_message)
+            return None
+        return candidate, conductor_model
 
     def _selected_candidate_or_first(self) -> CandidateLine:
         selected = self.candidate_tree.selection() if hasattr(self, "candidate_tree") else ()
