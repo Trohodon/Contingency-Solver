@@ -1,6 +1,7 @@
 from contingency_solver.core import (
     Branch,
     Bus,
+    CandidateLine,
     CandidateSettings,
     ConductorModel,
     CandidateClassification,
@@ -16,6 +17,7 @@ from contingency_solver.core import (
     new_thermal_violations,
     new_voltage_violations,
     ohms_to_per_unit,
+    preview_candidate_electricals,
     score_candidate,
     summarize_thermal_by_line,
     ScoreWeights,
@@ -77,6 +79,21 @@ def test_electrical_calculations() -> None:
     model = ConductorModel("115", "test", 115.0, 1, 0.08, 0.42, "susceptance_per_mile", 0.000003, 180, 220, 260)
     params = calculate_line_parameters(model, 10.0, 100.0)
     assert round(params.r_pu, 6) == round(0.8 / 132.25, 6)
+
+
+def test_candidate_electrical_preview() -> None:
+    candidate = CandidateLine(1, "A", 2, "B", 115, "115", 10.0)
+    model = ConductorModel("115", "test", 115.0, 1, 0.08, 0.42, "susceptance_per_mile", 0.000003, 180, 220, 260)
+    preview = preview_candidate_electricals(candidate, {"115": model}, 100.0)
+    assert preview.validation_message == "OK"
+    assert round(float(preview.r_pu), 6) == round(0.8 / 132.25, 6)
+    assert preview.rate_a_mva == 180
+
+
+def test_candidate_electrical_preview_reports_missing_model() -> None:
+    candidate = CandidateLine(1, "A", 2, "B", 500, "500", 10.0)
+    preview = preview_candidate_electricals(candidate, {}, 100.0)
+    assert "No conductor model" in preview.validation_message
 
 
 def test_classification_rules() -> None:
