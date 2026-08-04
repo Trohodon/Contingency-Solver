@@ -4,7 +4,8 @@ from openpyxl import load_workbook
 
 from contingency_solver.core import CandidateLine, ConductorModel
 from contingency_solver.mock import simulate_results
-from contingency_solver.storage import export_excel
+from contingency_solver import storage
+from contingency_solver.storage import create_working_case_copy, export_excel
 
 
 def test_excel_export_basic(tmp_path: Path) -> None:
@@ -15,3 +16,20 @@ def test_excel_export_basic(tmp_path: Path) -> None:
     workbook = load_workbook(path)
     assert "Candidate Results" in workbook.sheetnames
     assert "Run Summary" in workbook.sheetnames
+
+
+def test_create_working_case_copy(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "Example Case.pwb"
+    source.write_text("case-data", encoding="utf-8")
+    working_dir = tmp_path / "working"
+    monkeypatch.setattr(storage, "USER_DATA", tmp_path / "user_data")
+    monkeypatch.setattr(storage, "LOG_DIR", tmp_path / "user_data" / "logs")
+    monkeypatch.setattr(storage, "EXPORT_DIR", tmp_path / "user_data" / "exports")
+    monkeypatch.setattr(storage, "WORKING_CASE_DIR", working_dir)
+
+    copy_path = create_working_case_copy(source)
+
+    assert copy_path != source
+    assert copy_path.parent == working_dir
+    assert copy_path.suffix == ".pwb"
+    assert copy_path.read_text(encoding="utf-8") == "case-data"
