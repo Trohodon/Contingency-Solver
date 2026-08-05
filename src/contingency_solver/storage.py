@@ -40,6 +40,13 @@ def create_working_case_copy(source_path: Path) -> Path:
     return destination
 
 
+def create_post_contingency_case_path(source_path: Path, contingency_name: str) -> Path:
+    ensure_dirs()
+    safe_stem = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in source_path.stem)
+    safe_ctg = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in contingency_name)[:80]
+    return WORKING_CASE_DIR / f"{safe_stem}_{safe_ctg}_postctg_base{source_path.suffix}"
+
+
 def load_settings() -> dict[str, Any]:
     ensure_dirs()
     path = USER_DATA / "settings.json"
