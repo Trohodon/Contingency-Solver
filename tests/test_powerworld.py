@@ -93,9 +93,9 @@ def schema() -> PowerWorldSchema:
                         "circuit": ["LineCircuit"],
                         "status": ["Status"],
                         "nominal_kv": ["NomkV"],
-                        "mva": ["MVA"],
+                        "mva": ["MVA", "LineMVA"],
                         "rate_a": ["LineLimMVA"],
-                        "percent_loading": ["Percent"],
+                        "percent_loading": ["Percent", "LinePercent"],
                     },
                 },
                 "contingency": {
@@ -245,3 +245,15 @@ def test_read_branch_loading_with_diagnostics() -> None:
     assert loading is not None
     assert loading.percent_loading == 125.0
     assert loading.mva == 125.0
+
+
+def test_read_branch_loading_reports_available_likely_fields_when_unmapped() -> None:
+    fake = FakeClient()
+    fake.available["Branch"] = {"BusNum", "BusNum:1", "LineCircuit", "LineMWTo", "LinePercentTo"}
+    reader = PowerWorldReader(fake, schema())  # type: ignore[arg-type]
+
+    loading, attempt = reader.read_branch_loading_with_diagnostics(Branch(101, 102, "1", 115.0))
+
+    assert loading is None
+    assert "No configured live branch loading field" in attempt.error
+    assert "LineMWTo" in attempt.error
