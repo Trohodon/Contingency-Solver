@@ -280,7 +280,8 @@ class ContingencySolverApp(tk.Tk):
         ttk.Button(buttons, text="Run Mock Screening (Simulated)", command=self.run_mock_screening).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Run PowerWorld Screening Preflight", command=self.run_powerworld_preflight).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Probe Add One Candidate", command=self.probe_add_one_candidate).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Probe Add + Solve Intact", command=self.probe_add_and_solve_one_candidate).pack(side="left")
+        ttk.Button(buttons, text="Probe Add + Solve Intact", command=self.probe_add_and_solve_one_candidate).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Probe Add + Solve + Run CTG", command=self.probe_add_solve_and_run_contingency).pack(side="left")
         self.progress = ttk.Progressbar(page, mode="determinate")
         self.progress.pack(fill="x", pady=8)
         self.run_log = tk.Text(page, height=18, wrap="word")
@@ -854,6 +855,55 @@ class ContingencySolverApp(tk.Tk):
         messagebox.showinfo(
             APP_NAME,
             "Candidate add + intact solve probe succeeded on the temporary working copy.\n\n"
+            "The working copy was reloaded immediately after the probe so the candidate branch does not remain in the open case.",
+        )
+
+    def probe_add_solve_and_run_contingency(self) -> None:
+        prepared = self._prepare_candidate_probe()
+        if prepared is None:
+            return
+        candidate, conductor_model = prepared
+        if not self.selected_contingency_name or self.selected_contingency_name.startswith("("):
+            messagebox.showwarning(APP_NAME, "Select a real contingency from Baseline Results before running the contingency probe.")
+            return
+
+        try:
+            attempts, violations = self.powerworld.probe_add_candidate_solve_and_run_contingency(
+                self.working_case_path,
+                candidate,
+                conductor_model,
+                self.system_mva_base,
+                self.selected_contingency_name,
+                self.thermal_results_min_loading_pct,
+            )
+        except (SimAutoUnavailableError, SimAutoCommandError, ValueError) as exc:
+            LOGGER.exception("Candidate add, solve, and contingency probe failed.")
+            messagebox.showerror(APP_NAME, self._readable_error(exc))
+            return
+
+        text = "\n".join(self._format_attempt(attempt) for attempt in attempts)
+        top_rows = "\n".join(
+            f"- {row.contingency} | {row.branch_key} | {row.percent_loading:.2f}%"
+            for row in violations[:10]
+        )
+        self.run_log.insert(
+            "end",
+            f"Candidate add + intact solve + contingency probe result:\n{text}\n"
+            f"Thermal rows read: {len(violations)}\n{top_rows}\n",
+        )
+        errors = [attempt.error for attempt in attempts if attempt.error]
+        if errors:
+            messagebox.showerror(
+                APP_NAME,
+                "Candidate add + solve + contingency probe failed. The working case was reloaded after the attempt.\n\n"
+                f"{errors[-1]}\n\n"
+                "Copy the Run Screening log so the PowerWorld command can be adjusted.",
+            )
+            return
+        messagebox.showinfo(
+            APP_NAME,
+            "Candidate add + solve + contingency probe succeeded on the temporary working copy.\n\n"
+            f"Thermal rows read at or above {self.thermal_results_min_loading_pct:.1f}%: {len(violations)}\n\n"
             "The working copy was reloaded immediately after the probe so the candidate branch does not remain in the open case.",
         )
 
