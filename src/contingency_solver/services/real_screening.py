@@ -75,6 +75,12 @@ def _run_one_candidate(
     intact_solved = not any(attempt.filter_name == "intact_solve_probe" and attempt.error for attempt in attempts)
     contingency_solved = not any(attempt.filter_name == "selected_contingency_probe" and attempt.error for attempt in attempts)
 
+    selected_contingency_violations = [
+        item for item in violations if _normalize_issue(item.contingency) == _normalize_issue(context.selected_contingency)
+    ]
+    if selected_contingency_violations:
+        violations = selected_contingency_violations
+
     selected = _find_selected_violation(violations, context.selected_issue_key)
     new_loading = selected.percent_loading if selected is not None else min(context.original_loading_pct, 99.99)
     new_mva = selected.mva if selected is not None else 0.0
