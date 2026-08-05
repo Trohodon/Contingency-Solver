@@ -506,8 +506,21 @@ class PowerWorldReader:
         object_type = self.schema.object_type("branch")
         try:
             available = self.client.get_field_list(object_type)
-            fields = self.schema.resolve_required("branch", ["from_bus", "to_bus", "circuit", "mva"], available)
-            fields.update(self.schema.resolve_optional("branch", ["rate_a", "percent_loading", "nominal_kv"], available))
+            fields = self.schema.resolve_required("branch", ["from_bus", "to_bus", "circuit"], available)
+            fields.update(self.schema.resolve_optional("branch", ["mva", "rate_a", "percent_loading", "nominal_kv"], available))
+            if not any(key in fields for key in ("mva", "percent_loading")):
+                candidates = _interesting_branch_fields(available)
+                return None, QueryAttempt(
+                    object_type,
+                    "selected_branch_live_loading",
+                    fields=tuple(sorted(candidates)),
+                    error=(
+                        "No configured live branch loading field is available. "
+                        f"Configured mva alternatives: {', '.join(self.schema.alternatives('branch', 'mva'))}. "
+                        f"Configured percent alternatives: {', '.join(self.schema.alternatives('branch', 'percent_loading'))}. "
+                        f"Available likely branch fields: {', '.join(candidates) if candidates else '(none found)'}"
+                    ),
+                )
             field_values = list(fields.values())
             response = self._get_rows_response(object_type, field_values)
             rows = records_from_response(field_values, response.payload)
@@ -849,7 +862,7 @@ def _row_matches_branch(row: dict[str, Any], fields: dict[str, str], branch: Bra
 
 
 def _thermal_violation_from_branch_row(row: dict[str, Any], fields: dict[str, str], branch: Branch) -> ThermalViolation:
-    mva = abs(_to_float(row[fields["mva"]]))
+    mva = abs(_to_float(row[fields["mva"]])) if "mva" in fields else 0.0
     rating = _to_float(row[fields["rate_a"]]) if "rate_a" in fields else 0.0
     if "percent_loading" in fields:
         percent = abs(_optional_float(row[fields["percent_loading"]]) or 0.0)
@@ -866,6 +879,11 @@ def _thermal_violation_from_branch_row(row: dict[str, Any], fields: dict[str, st
         rating_mva=rating,
         percent_loading=percent,
     )
+
+
+def _interesting_branch_fields(available: set[str]) -> list[str]:
+    tokens = ("mva", "mw", "mvar", "amp", "percent", "pct", "rate", "lim", "load")
+    return sorted(field for field in available if any(token in field.lower() for token in tokens))
 
 
 def _is_line_or_transformer_loading_result(item: ThermalViolation, minimum_loading_pct: float) -> bool:
