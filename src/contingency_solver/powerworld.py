@@ -279,6 +279,34 @@ class PowerWorldReader:
         finally:
             self.reload_case(post_contingency_case_path)
 
+    def add_candidate_solve_and_read_current_violations(
+        self,
+        post_contingency_case_path: Path,
+        candidate: CandidateLine,
+        conductor_model: ConductorModel,
+        system_mva_base: float,
+        minimum_loading_pct: float,
+    ) -> tuple[list[QueryAttempt], list[ThermalViolation]]:
+        self.reload_case(post_contingency_case_path)
+        attempts = [self.probe_add_candidate_branch_without_restore(candidate, conductor_model, system_mva_base)]
+        violations: list[ThermalViolation] = []
+        try:
+            if attempts[0].error:
+                return attempts, violations
+            solve_command = self.schema.script_command("solve_power_flow")
+            try:
+                self.client.run_script_command("EnterMode(PowerFlow);")
+                self.client.run_script_command(solve_command)
+                attempts.append(QueryAttempt("PowerFlow", "candidate_postctg_solve", row_count=1, raw_summary=f"command={solve_command}"))
+            except Exception as exc:
+                attempts.append(QueryAttempt("PowerFlow", "candidate_postctg_solve", row_count=0, raw_summary=f"command={solve_command}", error=str(exc)))
+                return attempts, violations
+            violations, violation_attempts = self.read_current_thermal_violations_with_diagnostics(minimum_loading_pct)
+            attempts.extend(violation_attempts)
+            return attempts, violations
+        finally:
+            self.reload_case(post_contingency_case_path)
+
     def probe_add_candidate_branch(
         self,
         working_case_path: Path,
@@ -688,6 +716,69 @@ class PowerWorldReader:
                     return violations, attempts
         return [], attempts
 
+    def read_current_thermal_violations_with_diagnostics(self, minimum_loading_pct: float = 100.0) -> tuple[list[ThermalViolation], list[QueryAttempt]]:
+        attempts: list[QueryAttempt] = []
+        try:
+            self.client.run_script_command("EnterMode(PowerFlow);")
+        except Exception as exc:
+            attempts.append(QueryAttempt(object_type="LimitViol", filter_name="", error=f"EnterMode(PowerFlow) failed: {exc}"))
+
+        for object_type in self.schema.object_types("limit_violation"):
+            try:
+                available = self.client.get_field_list(object_type)
+                fields = self.schema.resolve_required("limit_violation", ["violation_id", "value", "percent"], available)
+                fields.update(self.schema.resolve_optional("limit_violation", ["limit", "category"], available))
+            except Exception as exc:
+                attempts.append(QueryAttempt(object_type=object_type, filter_name="", error=str(exc)))
+                fields = self._default_limit_violation_fields()
+
+            field_values = list(fields.values())
+            for filter_name in self.schema.query_filters("limit_violation"):
+                try:
+                    response = self._get_rows_response(object_type, field_values, filter_name)
+                    rows = records_from_response(field_values, response.payload)
+                    raw_summary = _summarize(response.raw)
+                    if not rows and hasattr(self.client, "export_rows_csv"):
+                        try:
+                            rows = self.client.export_rows_csv(object_type, field_values)
+                            raw_summary += f"; csv_fallback_rows={len(rows)}"
+                        except Exception as exc:
+                            raw_summary += f"; csv_fallback_error={exc}"
+                except Exception as exc:
+                    attempts.append(
+                        QueryAttempt(
+                            object_type=object_type,
+                            filter_name=filter_name,
+                            field_count=len(field_values),
+                            fields=tuple(field_values),
+                            error=str(exc),
+                        )
+                    )
+                    continue
+
+                violations = [_current_thermal_violation_from_row(row, fields) for row in rows]
+                violations = [item for item in violations if _is_line_or_transformer_loading_result(item, minimum_loading_pct)]
+                violations.sort(key=lambda item: item.percent_loading, reverse=True)
+                attempts.append(
+                    QueryAttempt(
+                        object_type=object_type,
+                        filter_name=filter_name,
+                        field_count=len(field_values),
+                        row_count=len(violations),
+                        fields=tuple(field_values),
+                        raw_summary=raw_summary,
+                    )
+                )
+                if violations:
+                    LOGGER.info(
+                        "Read %s current solved-case line/transformer thermal rows at or above %.2f%% using %s.",
+                        len(violations),
+                        minimum_loading_pct,
+                        object_type,
+                    )
+                    return violations, attempts
+        return [], attempts
+
     def _default_violation_ctg_fields(self) -> dict[str, str]:
         return {
             "contingency": self.schema.alternatives("violation_ctg", "contingency")[0],
@@ -696,6 +787,15 @@ class PowerWorldReader:
             "value": self.schema.alternatives("violation_ctg", "value")[0],
             "percent": self.schema.alternatives("violation_ctg", "percent")[0],
             "category": self.schema.alternatives("violation_ctg", "category")[0],
+        }
+
+    def _default_limit_violation_fields(self) -> dict[str, str]:
+        return {
+            "violation_id": self.schema.alternatives("limit_violation", "violation_id")[0],
+            "limit": self.schema.alternatives("limit_violation", "limit")[0],
+            "value": self.schema.alternatives("limit_violation", "value")[0],
+            "percent": self.schema.alternatives("limit_violation", "percent")[0],
+            "category": self.schema.alternatives("limit_violation", "category")[0],
         }
 
     def _resolve_violation_category_field(self, available: set[str]) -> str | None:
@@ -850,6 +950,21 @@ def _thermal_violation_from_row(row: dict[str, Any], fields: dict[str, str]) -> 
         rating_mva=(_optional_float(row.get(fields["limit"])) if "limit" in fields else 0.0) or 0.0,
         percent_loading=_optional_float(row.get(fields["percent"])) or 0.0,
         contingency=str(row.get(fields["contingency"], "")).strip(),
+        category=str(row.get(fields["category"], "")).strip() if "category" in fields else "",
+    )
+
+
+def _current_thermal_violation_from_row(row: dict[str, Any], fields: dict[str, str]) -> ThermalViolation:
+    violation_id = str(row.get(fields["violation_id"], "")).strip()
+    return ThermalViolation(
+        branch_key=violation_id,
+        from_bus=0,
+        to_bus=0,
+        circuit_id="",
+        mva=_optional_float(row.get(fields["value"])) or 0.0,
+        rating_mva=(_optional_float(row.get(fields["limit"])) if "limit" in fields else 0.0) or 0.0,
+        percent_loading=_optional_float(row.get(fields["percent"])) or 0.0,
+        contingency="POST_CTG_BASE",
         category=str(row.get(fields["category"], "")).strip() if "category" in fields else "",
     )
 
