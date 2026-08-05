@@ -37,6 +37,7 @@ from contingency_solver.services.real_screening import RealScreeningContext, run
 from contingency_solver.storage import (
     EXPORT_DIR,
     LOG_DIR,
+    create_post_contingency_case_path,
     create_working_case_copy,
     ensure_dirs,
     export_csv,
@@ -939,6 +940,8 @@ class ContingencySolverApp(tk.Tk):
             return
 
         context = self._real_screening_context()
+        if context is None:
+            return
         self.run_var.set("Run: real screening running")
         self.progress.configure(maximum=min(limit, len(self.candidates)), value=0)
         self.run_log.insert("end", f"Starting real screening batch for {min(limit, len(self.candidates))} candidates.\n")
@@ -960,17 +963,48 @@ class ContingencySolverApp(tk.Tk):
         self.run_log.insert("end", f"Real screening complete. Results: {counts}\n")
         messagebox.showinfo(APP_NAME, f"Real screening complete. {len(self.results)} candidates processed.")
 
-    def _real_screening_context(self) -> RealScreeningContext:
+    def _real_screening_context(self) -> RealScreeningContext | None:
+        if self.working_case_path is None:
+            messagebox.showwarning(APP_NAME, "No temporary working case is loaded.")
+            return None
+        postctg_path = create_post_contingency_case_path(self.working_case_path, self.selected_contingency_name)
+        attempts = self.powerworld.create_post_contingency_base(
+            self.working_case_path,
+            postctg_path,
+            self.selected_contingency_name,
+        )
+        self.run_log.insert("end", "Post-contingency base creation:\n" + "\n".join(self._format_attempt(attempt) for attempt in attempts) + "\n")
+        errors = [attempt.error for attempt in attempts if attempt.error]
+        if errors:
+            messagebox.showerror(
+                APP_NAME,
+                "Could not create the temporary post-contingency base case.\n\n"
+                f"{errors[-1]}",
+            )
+            return None
+
+        self.powerworld.reload_case(postctg_path)
+        original_live, original_attempt = self.powerworld.read_branch_loading_with_diagnostics(self.selected_branch)
+        self.run_log.insert("end", "Post-contingency original selected branch loading:\n" + self._format_attempt(original_attempt) + "\n")
+        if original_attempt.error or original_live is None:
+            messagebox.showerror(
+                APP_NAME,
+                "Could not read the selected branch loading from the post-contingency base.\n\n"
+                f"{original_attempt.error}",
+            )
+            return None
+
         selected_rows = self._selected_baseline_rows()
         worst = max(selected_rows, key=lambda item: item.percent_loading) if selected_rows else None
-        original_loading = self._selected_original_loading_pct()
         return RealScreeningContext(
             working_case_path=self.working_case_path,
+            post_contingency_case_path=postctg_path,
+            selected_branch=self.selected_branch,
             selected_contingency=self.selected_contingency_name,
             selected_issue_key=self.selected_issue_key,
-            original_loading_pct=original_loading,
-            original_mva=worst.mva if worst else 0.0,
-            original_rating_mva=worst.rating_mva if worst else 0.0,
+            original_loading_pct=original_live.percent_loading,
+            original_mva=original_live.mva,
+            original_rating_mva=original_live.rating_mva if original_live.rating_mva else (worst.rating_mva if worst else 0.0),
             baseline_violations=self.baseline_overloads,
             conductor_models=self.conductors,
             system_mva_base=self.system_mva_base,
