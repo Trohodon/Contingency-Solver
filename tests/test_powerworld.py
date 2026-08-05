@@ -116,6 +116,7 @@ def schema() -> PowerWorldSchema:
             "script_commands": {
                 "load_aux": "LoadAux(\"{aux_path}\")",
                 "solve_power_flow": "SolvePowerFlow(RECTNEWT)",
+                "run_contingency": "CTGRun(\"{contingency_name}\")",
             },
         }
     )
@@ -186,4 +187,27 @@ def test_probe_add_candidate_and_solve_runs_load_aux_solve_and_reload(tmp_path: 
     assert [attempt.filter_name for attempt in attempts] == ["candidate_probe", "intact_solve_probe"]
     assert any(command.startswith("LoadAux(") for command in fake.commands)
     assert "SolvePowerFlow(RECTNEWT)" in fake.commands
+    assert fake.opened_cases == [str(tmp_path / "working.pwb")]
+
+
+def test_probe_add_solve_and_run_contingency_reads_violations_and_reloads(tmp_path: Path) -> None:
+    fake = FakeClient()
+    reader = PowerWorldReader(fake, schema())  # type: ignore[arg-type]
+    candidate = CandidateLine(101, "A", 102, "B", 115.0, "115", 10.0)
+    model = ConductorModel("115", "115 kV 1272 ACSR BITTERN", 115.0, 1, 0.0832, 0.378, "capacitive_reactance_megaohm_mile", 0.0855, 237.03, 254.2, 314.61)
+
+    attempts, violations = reader.probe_add_candidate_solve_and_run_contingency(
+        tmp_path / "working.pwb",
+        candidate,
+        model,
+        100.0,
+        "CTG_A",
+        90.0,
+    )
+
+    assert any(command.startswith("LoadAux(") for command in fake.commands)
+    assert "SolvePowerFlow(RECTNEWT)" in fake.commands
+    assert 'CTGRun("CTG_A")' in fake.commands
+    assert len(violations) == 1
+    assert any(attempt.filter_name == "selected_contingency_probe" for attempt in attempts)
     assert fake.opened_cases == [str(tmp_path / "working.pwb")]
