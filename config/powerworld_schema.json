@@ -25,9 +25,9 @@
         "circuit": ["LineCircuit", "Circuit"],
         "status": ["Status"],
         "nominal_kv": ["NomkV", "BusNomVolt", "LineNomVolt"],
-        "mva": ["MVA"],
-        "rate_a": ["LineLimMVA", "RateA"],
-        "percent_loading": ["Percent", "PctLoading"]
+        "mva": ["MVA", "LineMVA", "LineMVA:0", "LineMVA:1", "LineMVA:2", "LineMVA:3", "MVAFrom", "MVATo", "LineMW", "MW", "LineMW:0", "LineMW:1"],
+        "rate_a": ["LineLimMVA", "LineMVA", "LineMVA:0", "RateA", "RateAMVA", "LineRateA", "LineLimMVA:0"],
+        "percent_loading": ["Percent", "PctLoading", "LinePercent", "LinePercent:0", "LinePercent:1", "Pct", "PercentLoading", "MVAPercent"]
       }
     },
     "contingency": {
