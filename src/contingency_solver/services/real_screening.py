@@ -63,12 +63,12 @@ def _run_one_candidate(
         return _error_result(candidate, index, context, f"No conductor model for {candidate.conductor_key} kV.", time.perf_counter() - start)
 
     try:
-        attempts, selected_loading = powerworld.add_candidate_solve_and_read_selected_branch(
+        attempts, current_violations = powerworld.add_candidate_solve_and_read_current_violations(
             context.post_contingency_case_path,
             candidate,
             model,
             context.system_mva_base,
-            context.selected_branch,
+            context.minimum_loading_pct,
         )
     except Exception as exc:
         return _error_result(candidate, index, context, str(exc), time.perf_counter() - start)
@@ -77,12 +77,14 @@ def _run_one_candidate(
     intact_solved = not any(attempt.filter_name == "candidate_postctg_solve" and attempt.error for attempt in attempts)
     contingency_solved = True
 
-    new_loading = selected_loading.percent_loading if selected_loading is not None else context.original_loading_pct
-    new_mva = selected_loading.mva if selected_loading is not None else context.original_mva
+    selected_loading = _find_selected_violation(current_violations, context.selected_issue_key)
+    selected_removed = selected_loading is None and intact_solved and not error
+    new_loading = selected_loading.percent_loading if selected_loading is not None else min(99.99, context.original_loading_pct)
+    new_mva = selected_loading.mva if selected_loading is not None else 0.0
     reduction = context.original_loading_pct - new_loading
-    new_violations: list[ThermalViolation] = []
-    worst_new = 0.0
-    removed = new_loading <= 100.0
+    new_violations = _new_thermal_violations(context.baseline_violations, current_violations)
+    worst_new = max((item.percent_loading for item in new_violations), default=0.0)
+    removed = selected_removed or new_loading <= 100.0
 
     classification = classify_candidate(
         context.original_loading_pct,
@@ -93,6 +95,8 @@ def _run_one_candidate(
         error_message=error,
         meaningful_improvement_threshold_pct_points=context.meaningful_improvement_threshold_pct_points,
     )
+    if classification == CandidateClassification.NO_EFFECT and new_violations:
+        classification = CandidateClassification.WORSE
     score, components = score_candidate(
         reduction,
         removed,
@@ -147,8 +151,8 @@ def _find_selected_violation(violations: list[ThermalViolation], selected_issue_
 
 
 def _new_thermal_violations(baseline: list[ThermalViolation], candidate: list[ThermalViolation]) -> list[ThermalViolation]:
-    baseline_keys = {(_normalize_issue(item.branch_key), item.contingency) for item in baseline}
-    return [item for item in candidate if (_normalize_issue(item.branch_key), item.contingency) not in baseline_keys]
+    baseline_keys = {_normalize_issue(item.branch_key) for item in baseline}
+    return [item for item in candidate if _normalize_issue(item.branch_key) not in baseline_keys]
 
 
 def _normalize_issue(value: str) -> str:
