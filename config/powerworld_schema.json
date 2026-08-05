@@ -54,6 +54,18 @@
         "percent": ["LimViolPct", "Percent", "Pct"],
         "category": ["LimViolCat", "Category"]
       }
+    },
+    "limit_violation": {
+      "object_type": "LimitViol",
+      "object_type_alternatives": ["LimitViol", "Violation", "LimitViolation"],
+      "query_filters": [""],
+      "fields": {
+        "violation_id": ["LimViolID", "Violation", "ResultingIssue"],
+        "limit": ["LimViolLimit", "Limit"],
+        "value": ["LimViolValue", "Value"],
+        "percent": ["LimViolPct", "Percent", "Pct"],
+        "category": ["LimViolCat", "Category", "LimViolCalc"]
+      }
     }
   },
   "script_commands": {
