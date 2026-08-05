@@ -58,6 +58,9 @@
   },
   "script_commands": {
     "solve_power_flow": "SolvePowerFlow(RECTNEWT)",
+    "set_contingency_reference": "CTGSetAsReference",
+    "clear_contingency_results": "CTGClearAllResults",
     "run_contingency": "CTGSolve(\"{contingency_name}\")",
     "load_aux": "LoadAux(\"{aux_path}\")"
   }
+}
