@@ -14,6 +14,7 @@ from contingency_solver.core import (
     CandidateSettings,
     ConductorModel,
     LineLoadingSummary,
+    ThermalViolation,
     build_branch_pair_index,
     branch_display,
     generate_candidates,
@@ -32,6 +33,7 @@ from contingency_solver.mock import (
     simulate_results,
 )
 from contingency_solver.powerworld import PowerWorldReader, SchemaResolutionError, SimAutoCommandError, SimAutoUnavailableError
+from contingency_solver.services.real_screening import RealScreeningContext, run_real_screening_batch
 from contingency_solver.storage import (
     EXPORT_DIR,
     LOG_DIR,
@@ -92,6 +94,7 @@ class ContingencySolverApp(tk.Tk):
         self.candidates: list[CandidateLine] = []
         self.results: list[CandidateResult] = []
         self.case_summary_message = "Mock data loaded."
+        self.real_batch_limit_var: tk.IntVar | None = None
 
         self._configure_style()
         self._build_layout()
@@ -282,6 +285,12 @@ class ContingencySolverApp(tk.Tk):
         ttk.Button(buttons, text="Probe Add One Candidate", command=self.probe_add_one_candidate).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Probe Add + Solve Intact", command=self.probe_add_and_solve_one_candidate).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Probe Add + Solve + Run CTG", command=self.probe_add_solve_and_run_contingency).pack(side="left")
+        batch = ttk.Frame(page)
+        batch.pack(fill="x", pady=(0, 8))
+        self.real_batch_limit_var = tk.IntVar(value=5)
+        ttk.Label(batch, text="Real batch candidate limit").pack(side="left", padx=(0, 6))
+        ttk.Entry(batch, textvariable=self.real_batch_limit_var, width=8).pack(side="left", padx=(0, 6))
+        ttk.Button(batch, text="Run Real Screening Batch", command=self.run_real_screening_batch).pack(side="left")
         self.progress = ttk.Progressbar(page, mode="determinate")
         self.progress.pack(fill="x", pady=8)
         self.run_log = tk.Text(page, height=18, wrap="word")
@@ -906,6 +915,75 @@ class ContingencySolverApp(tk.Tk):
             f"Thermal rows read at or above {self.thermal_results_min_loading_pct:.1f}%: {len(violations)}\n\n"
             "The working copy was reloaded immediately after the probe so the candidate branch does not remain in the open case.",
         )
+
+    def run_real_screening_batch(self) -> None:
+        if not self.real_case_loaded or self.working_case_path is None:
+            messagebox.showwarning(APP_NAME, "Load a real PowerWorld case before running real screening.")
+            return
+        if not self.candidates:
+            self.generate_candidate_preview()
+        if not self.candidates:
+            messagebox.showwarning(APP_NAME, "No candidate lines are available to screen.")
+            return
+        if not self.selected_contingency_name or self.selected_contingency_name.startswith("("):
+            messagebox.showwarning(APP_NAME, "Select a real contingency from Baseline Results before running real screening.")
+            return
+        limit = max(1, int(self.real_batch_limit_var.get() if self.real_batch_limit_var is not None else 5))
+        if not messagebox.askyesno(
+            APP_NAME,
+            "Run real PowerWorld screening on the temporary working copy?\n\n"
+            f"Candidates to process: {min(limit, len(self.candidates))}\n"
+            f"Selected contingency: {self.selected_contingency_name}\n\n"
+            "The original case will not be opened. The working copy is reloaded after every candidate.",
+        ):
+            return
+
+        context = self._real_screening_context()
+        self.run_var.set("Run: real screening running")
+        self.progress.configure(maximum=min(limit, len(self.candidates)), value=0)
+        self.run_log.insert("end", f"Starting real screening batch for {min(limit, len(self.candidates))} candidates.\n")
+        try:
+            self.results = run_real_screening_batch(self.powerworld, self.candidates, context, limit)
+        except Exception as exc:
+            LOGGER.exception("Real screening batch failed.")
+            self.run_var.set("Run: real screening failed")
+            messagebox.showerror(APP_NAME, str(exc))
+            return
+
+        self.progress.configure(value=len(self.results))
+        self.run_var.set("Run: real screening complete")
+        self._set_tree_rows(self.results_tree, [tuple(result_to_row(result).values()) for result in self.results])
+        save_run_history(self.selected_contingency_name, self.selected_issue_key, self.settings, self.results)
+        counts: dict[str, int] = {}
+        for result in self.results:
+            counts[result.classification.value] = counts.get(result.classification.value, 0) + 1
+        self.run_log.insert("end", f"Real screening complete. Results: {counts}\n")
+        messagebox.showinfo(APP_NAME, f"Real screening complete. {len(self.results)} candidates processed.")
+
+    def _real_screening_context(self) -> RealScreeningContext:
+        selected_rows = self._selected_baseline_rows()
+        worst = max(selected_rows, key=lambda item: item.percent_loading) if selected_rows else None
+        original_loading = self._selected_original_loading_pct()
+        return RealScreeningContext(
+            working_case_path=self.working_case_path,
+            selected_contingency=self.selected_contingency_name,
+            selected_issue_key=self.selected_issue_key,
+            original_loading_pct=original_loading,
+            original_mva=worst.mva if worst else 0.0,
+            original_rating_mva=worst.rating_mva if worst else 0.0,
+            baseline_violations=self.baseline_overloads,
+            conductor_models=self.conductors,
+            system_mva_base=self.system_mva_base,
+            minimum_loading_pct=self.thermal_results_min_loading_pct,
+            meaningful_improvement_threshold_pct_points=float(self.settings.get("meaningful_improvement_threshold_pct_points", 2.0)),
+        )
+
+    def _selected_baseline_rows(self) -> list[ThermalViolation]:
+        return [
+            row
+            for row in self.baseline_overloads
+            if (row.branch_key or "(No line/transformer label)") == self.selected_issue_key
+        ]
 
     def _prepare_candidate_probe(self) -> tuple[CandidateLine, ConductorModel] | None:
         if not self.real_case_loaded or self.working_case_path is None:
