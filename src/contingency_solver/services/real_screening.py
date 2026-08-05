@@ -6,6 +6,7 @@ from pathlib import Path
 
 from contingency_solver.core import (
     CandidateClassification,
+    Branch,
     CandidateLine,
     CandidateResult,
     ConductorModel,
@@ -20,6 +21,8 @@ from contingency_solver.powerworld import PowerWorldReader
 @dataclass(frozen=True)
 class RealScreeningContext:
     working_case_path: Path
+    post_contingency_case_path: Path
+    selected_branch: Branch
     selected_contingency: str
     selected_issue_key: str
     original_loading_pct: float
@@ -60,33 +63,25 @@ def _run_one_candidate(
         return _error_result(candidate, index, context, f"No conductor model for {candidate.conductor_key} kV.", time.perf_counter() - start)
 
     try:
-        attempts, violations = powerworld.probe_add_candidate_solve_and_run_contingency(
-            context.working_case_path,
+        attempts, selected_loading = powerworld.add_candidate_solve_and_read_selected_branch(
+            context.post_contingency_case_path,
             candidate,
             model,
             context.system_mva_base,
-            context.selected_contingency,
-            context.minimum_loading_pct,
+            context.selected_branch,
         )
     except Exception as exc:
         return _error_result(candidate, index, context, str(exc), time.perf_counter() - start)
 
     error = next((attempt.error for attempt in attempts if attempt.error), "")
-    intact_solved = not any(attempt.filter_name == "intact_solve_probe" and attempt.error for attempt in attempts)
-    contingency_solved = not any(attempt.filter_name == "selected_contingency_probe" and attempt.error for attempt in attempts)
+    intact_solved = not any(attempt.filter_name == "candidate_postctg_solve" and attempt.error for attempt in attempts)
+    contingency_solved = True
 
-    selected_contingency_violations = [
-        item for item in violations if _normalize_issue(item.contingency) == _normalize_issue(context.selected_contingency)
-    ]
-    if selected_contingency_violations:
-        violations = selected_contingency_violations
-
-    selected = _find_selected_violation(violations, context.selected_issue_key)
-    new_loading = selected.percent_loading if selected is not None else min(context.original_loading_pct, 99.99)
-    new_mva = selected.mva if selected is not None else 0.0
+    new_loading = selected_loading.percent_loading if selected_loading is not None else context.original_loading_pct
+    new_mva = selected_loading.mva if selected_loading is not None else context.original_mva
     reduction = context.original_loading_pct - new_loading
-    new_violations = _new_thermal_violations(context.baseline_violations, violations)
-    worst_new = max((item.percent_loading for item in new_violations), default=0.0)
+    new_violations: list[ThermalViolation] = []
+    worst_new = 0.0
     removed = new_loading <= 100.0
 
     classification = classify_candidate(
