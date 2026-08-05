@@ -24,6 +24,7 @@ class FakeClient:
             "Branch": {"BusNum", "BusNum:1", "LineCircuit", "Status", "MVA", "LineLimMVA", "Percent"},
             "Contingency": {"CTGLabel", "Category", "Skip", "Solved", "NumActions"},
             "ViolationCTG": {"CTGLabel", "LimViolID", "LimViolLimit", "LimViolValue", "LimViolPct", "LimViolCalc"},
+            "LimitViol": {"LimViolID", "LimViolLimit", "LimViolValue", "LimViolPct", "LimViolCalc"},
         }
         self.rows = {
             "Bus": [{"BusNum": "101", "BusName": "A", "BusNomVolt": "115", "Latitude": "40", "Longitude": "-82", "Status": "Closed"}],
@@ -40,6 +41,22 @@ class FakeClient:
                 },
                 {
                     "CTGLabel": "CTG_B",
+                    "LimViolID": "Bus 55 low voltage",
+                    "LimViolLimit": "0.95",
+                    "LimViolValue": "0.92",
+                    "LimViolPct": "130",
+                    "LimViolCalc": "Voltage",
+                },
+            ],
+            "LimitViol": [
+                {
+                    "LimViolID": "Line 101-102 1",
+                    "LimViolLimit": "100",
+                    "LimViolValue": "118",
+                    "LimViolPct": "118%",
+                    "LimViolCalc": "Limit Monitoring",
+                },
+                {
                     "LimViolID": "Bus 55 low voltage",
                     "LimViolLimit": "0.95",
                     "LimViolValue": "0.92",
@@ -119,6 +136,17 @@ def schema() -> PowerWorldSchema:
                         "category": ["LimViolCat"],
                     },
                 },
+                "limit_violation": {
+                    "object_type": "LimitViol",
+                    "object_type_alternatives": ["LimitViol"],
+                    "fields": {
+                        "violation_id": ["LimViolID"],
+                        "limit": ["LimViolLimit"],
+                        "value": ["LimViolValue"],
+                        "percent": ["LimViolPct"],
+                        "category": ["LimViolCat", "LimViolCalc"],
+                    },
+                },
             },
             "script_commands": {
                 "load_aux": "LoadAux(\"{aux_path}\")",
@@ -172,6 +200,18 @@ def test_reader_keeps_near_overloads_when_threshold_is_90() -> None:
     violations, _attempts = reader.read_thermal_violations_with_diagnostics(90.0)
     assert len(violations) == 1
     assert violations[0].percent_loading == 96.5
+
+
+def test_reader_maps_current_limit_violations() -> None:
+    reader = PowerWorldReader(FakeClient(), schema())  # type: ignore[arg-type]
+
+    violations, attempts = reader.read_current_thermal_violations_with_diagnostics(90.0)
+
+    assert attempts
+    assert len(violations) == 1
+    assert violations[0].branch_key == "Line 101-102 1"
+    assert violations[0].percent_loading == 118.0
+    assert violations[0].contingency == "POST_CTG_BASE"
 
 
 def test_candidate_branch_aux_uses_powerworld_line_fields() -> None:
