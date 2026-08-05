@@ -116,7 +116,7 @@ def schema() -> PowerWorldSchema:
             "script_commands": {
                 "load_aux": "LoadAux(\"{aux_path}\")",
                 "solve_power_flow": "SolvePowerFlow(RECTNEWT)",
-                "run_contingency": "CTGRun(\"{contingency_name}\")",
+                "run_contingency": "CTGSolve(\"{contingency_name}\")",
             },
         }
     )
@@ -207,7 +207,7 @@ def test_probe_add_solve_and_run_contingency_reads_violations_and_reloads(tmp_pa
 
     assert any(command.startswith("LoadAux(") for command in fake.commands)
     assert "SolvePowerFlow(RECTNEWT)" in fake.commands
-    assert 'CTGRun("CTG_A")' in fake.commands
+    assert 'CTGSolve("CTG_A")' in fake.commands
     assert len(violations) == 1
     assert any(attempt.filter_name == "selected_contingency_probe" for attempt in attempts)
     assert fake.opened_cases == [str(tmp_path / "working.pwb")]
