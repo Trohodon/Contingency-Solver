@@ -323,8 +323,19 @@ class PowerWorldReader:
             contingency_command = self.schema.script_command("run_contingency").format(contingency_name=_escape_script_string(contingency_name))
             try:
                 self.client.run_script_command("EnterMode(Contingency);")
+                reference_command = self.schema.script_command("set_contingency_reference")
+                clear_command = self.schema.script_command("clear_contingency_results")
+                self.client.run_script_command(reference_command)
+                self.client.run_script_command(clear_command)
                 self.client.run_script_command(contingency_command)
-                attempts.append(QueryAttempt("Contingency", "selected_contingency_probe", row_count=1, raw_summary=f"command={contingency_command}"))
+                attempts.append(
+                    QueryAttempt(
+                        "Contingency",
+                        "selected_contingency_probe",
+                        row_count=1,
+                        raw_summary=f"commands={reference_command}; {clear_command}; {contingency_command}",
+                    )
+                )
             except Exception as exc:
                 attempts.append(QueryAttempt("Contingency", "selected_contingency_probe", row_count=0, raw_summary=f"command={contingency_command}", error=str(exc)))
                 return attempts, violations
