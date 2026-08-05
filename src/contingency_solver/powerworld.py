@@ -295,6 +295,46 @@ class PowerWorldReader:
             self.reload_case(working_case_path)
         return attempts
 
+    def probe_add_candidate_solve_and_run_contingency(
+        self,
+        working_case_path: Path,
+        candidate: CandidateLine,
+        conductor_model: ConductorModel,
+        system_mva_base: float,
+        contingency_name: str,
+        minimum_loading_pct: float,
+    ) -> tuple[list[QueryAttempt], list[ThermalViolation]]:
+        attempts = [
+            self.probe_add_candidate_branch_without_restore(candidate, conductor_model, system_mva_base)
+        ]
+        violations: list[ThermalViolation] = []
+        try:
+            if attempts[0].error:
+                return attempts, violations
+
+            solve_command = self.schema.script_command("solve_power_flow")
+            try:
+                self.client.run_script_command(solve_command)
+                attempts.append(QueryAttempt("PowerFlow", "intact_solve_probe", row_count=1, raw_summary=f"command={solve_command}"))
+            except Exception as exc:
+                attempts.append(QueryAttempt("PowerFlow", "intact_solve_probe", row_count=0, raw_summary=f"command={solve_command}", error=str(exc)))
+                return attempts, violations
+
+            contingency_command = self.schema.script_command("run_contingency").format(contingency_name=_escape_script_string(contingency_name))
+            try:
+                self.client.run_script_command("EnterMode(Contingency);")
+                self.client.run_script_command(contingency_command)
+                attempts.append(QueryAttempt("Contingency", "selected_contingency_probe", row_count=1, raw_summary=f"command={contingency_command}"))
+            except Exception as exc:
+                attempts.append(QueryAttempt("Contingency", "selected_contingency_probe", row_count=0, raw_summary=f"command={contingency_command}", error=str(exc)))
+                return attempts, violations
+
+            violations, violation_attempts = self.read_thermal_violations_with_diagnostics(minimum_loading_pct)
+            attempts.extend(violation_attempts)
+            return attempts, violations
+        finally:
+            self.reload_case(working_case_path)
+
     def probe_add_candidate_branch_without_restore(
         self,
         candidate: CandidateLine,
@@ -561,6 +601,10 @@ def build_candidate_branch_aux(candidate: CandidateLine, model: ConductorModel, 
             "",
         ]
     )
+
+
+def _escape_script_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def records_from_response(fields: list[str], payload: tuple[Any, ...]) -> list[dict[str, Any]]:
