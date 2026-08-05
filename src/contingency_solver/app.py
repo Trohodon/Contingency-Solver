@@ -984,28 +984,52 @@ class ContingencySolverApp(tk.Tk):
             return None
 
         self.powerworld.reload_case(postctg_path)
-        original_live, original_attempt = self.powerworld.read_branch_loading_with_diagnostics(self.selected_branch)
-        self.run_log.insert("end", "Post-contingency original selected branch loading:\n" + self._format_attempt(original_attempt) + "\n")
-        if original_attempt.error or original_live is None:
+        postctg_violations, postctg_violation_attempts = self.powerworld.read_current_thermal_violations_with_diagnostics(
+            self.thermal_results_min_loading_pct
+        )
+        self.run_log.insert(
+            "end",
+            "Post-contingency current thermal violations:\n"
+            + "\n".join(self._format_attempt(attempt) for attempt in postctg_violation_attempts)
+            + "\n",
+        )
+        current_violation_errors = [attempt.error for attempt in postctg_violation_attempts if attempt.error]
+        if not postctg_violations:
+            detail = current_violation_errors[-1] if current_violation_errors else "The configured current limit-violation tables returned zero thermal rows."
             messagebox.showerror(
                 APP_NAME,
-                "Could not read the selected branch loading from the post-contingency base.\n\n"
-                f"{original_attempt.error}",
+                "Could not read the current solved-case thermal violations from the temporary post-contingency base.\n\n"
+                f"{detail}\n\n"
+                "Copy the Run Screening log so the PowerWorld limit-violation table mapping can be adjusted.",
             )
             return None
 
+        original_live, original_attempt = self.powerworld.read_branch_loading_with_diagnostics(self.selected_branch)
+        self.run_log.insert("end", "Post-contingency original selected branch loading:\n" + self._format_attempt(original_attempt) + "\n")
+
         selected_rows = self._selected_baseline_rows()
         worst = max(selected_rows, key=lambda item: item.percent_loading) if selected_rows else None
+        current_selected = _find_matching_current_violation(postctg_violations, self.selected_issue_key)
+        original_source = current_selected or original_live or worst
+        if original_source is None:
+            messagebox.showerror(
+                APP_NAME,
+                "Could not establish the selected line's post-contingency baseline loading.\n\n"
+                "The current limit-violation table did not contain the selected issue, and the live Branch table read did not return it.",
+            )
+            return None
+        if original_attempt.error:
+            self.run_log.insert("end", f"Live selected branch loading read warning: {original_attempt.error}\n")
         return RealScreeningContext(
             working_case_path=self.working_case_path,
             post_contingency_case_path=postctg_path,
             selected_branch=self.selected_branch,
             selected_contingency=self.selected_contingency_name,
             selected_issue_key=self.selected_issue_key,
-            original_loading_pct=original_live.percent_loading,
-            original_mva=original_live.mva,
-            original_rating_mva=original_live.rating_mva if original_live.rating_mva else (worst.rating_mva if worst else 0.0),
-            baseline_violations=self.baseline_overloads,
+            original_loading_pct=original_source.percent_loading,
+            original_mva=original_source.mva,
+            original_rating_mva=original_source.rating_mva if original_source.rating_mva else (worst.rating_mva if worst else 0.0),
+            baseline_violations=postctg_violations,
             conductor_models=self.conductors,
             system_mva_base=self.system_mva_base,
             minimum_loading_pct=self.thermal_results_min_loading_pct,
@@ -1206,6 +1230,21 @@ class ContingencySolverApp(tk.Tk):
 
 def _empty_result() -> CandidateResult:
     return CandidateResult(0, 0, CandidateClassification.NO_EFFECT, 0, "", 0, "", 0, "", 0, 0, 0, 0, 0, 0, False, 0, 0, 0, 0, 0, False, False, 0)
+
+
+def _find_matching_current_violation(violations: list[ThermalViolation], selected_issue_key: str) -> ThermalViolation | None:
+    normalized = _normalize_issue_key(selected_issue_key)
+    exact = [item for item in violations if _normalize_issue_key(item.branch_key) == normalized]
+    if exact:
+        return max(exact, key=lambda item: item.percent_loading)
+    contains = [item for item in violations if normalized and normalized in _normalize_issue_key(item.branch_key)]
+    if contains:
+        return max(contains, key=lambda item: item.percent_loading)
+    return None
+
+
+def _normalize_issue_key(value: str) -> str:
+    return " ".join(value.lower().replace("!", "").split())
 
 
 def main() -> int:
