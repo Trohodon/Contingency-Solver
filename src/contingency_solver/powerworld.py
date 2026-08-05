@@ -157,6 +157,9 @@ class SimAutoClient:
     def open_case(self, path: Path) -> None:
         self.call("OpenCase", str(path))
 
+    def save_case(self, path: Path, file_type: str = "PWB", overwrite: bool = True) -> None:
+        self.call("SaveCase", str(path), file_type, overwrite)
+
     def get_version(self) -> str:
         try:
             self.call("RunScriptCommand", 'LogMsg("Contingency Solver connection test")')
@@ -216,6 +219,65 @@ class PowerWorldReader:
 
     def reload_case(self, path: Path) -> None:
         self.client.open_case(path)
+
+    def create_post_contingency_base(
+        self,
+        source_case_path: Path,
+        post_contingency_case_path: Path,
+        contingency_name: str,
+    ) -> list[QueryAttempt]:
+        attempts: list[QueryAttempt] = []
+        self.reload_case(source_case_path)
+        solve_command = self.schema.script_command("solve_power_flow")
+        contingency_command = self.schema.script_command("run_contingency").format(contingency_name=_escape_script_string(contingency_name))
+        try:
+            self.client.run_script_command("EnterMode(PowerFlow);")
+            self.client.run_script_command(solve_command)
+            attempts.append(QueryAttempt("PowerFlow", "postctg_base_intact_solve", row_count=1, raw_summary=f"command={solve_command}"))
+        except Exception as exc:
+            attempts.append(QueryAttempt("PowerFlow", "postctg_base_intact_solve", row_count=0, raw_summary=f"command={solve_command}", error=str(exc)))
+            return attempts
+        try:
+            self.client.run_script_command("EnterMode(Contingency);")
+            self.client.run_script_command(self.schema.script_command("set_contingency_reference"))
+            self.client.run_script_command(contingency_command)
+            attempts.append(QueryAttempt("Contingency", "postctg_base_solve_selected", row_count=1, raw_summary=f"command={contingency_command}"))
+        except Exception as exc:
+            attempts.append(QueryAttempt("Contingency", "postctg_base_solve_selected", row_count=0, raw_summary=f"command={contingency_command}", error=str(exc)))
+            return attempts
+        try:
+            self.client.save_case(post_contingency_case_path)
+            attempts.append(QueryAttempt("Case", "postctg_base_save", row_count=1, raw_summary=f"saved={post_contingency_case_path}"))
+        except Exception as exc:
+            attempts.append(QueryAttempt("Case", "postctg_base_save", row_count=0, raw_summary=f"save={post_contingency_case_path}", error=str(exc)))
+        return attempts
+
+    def add_candidate_solve_and_read_selected_branch(
+        self,
+        post_contingency_case_path: Path,
+        candidate: CandidateLine,
+        conductor_model: ConductorModel,
+        system_mva_base: float,
+        selected_branch: Branch,
+    ) -> tuple[list[QueryAttempt], ThermalViolation | None]:
+        attempts = [self.probe_add_candidate_branch_without_restore(candidate, conductor_model, system_mva_base)]
+        selected_loading: ThermalViolation | None = None
+        try:
+            if attempts[0].error:
+                return attempts, selected_loading
+            solve_command = self.schema.script_command("solve_power_flow")
+            try:
+                self.client.run_script_command("EnterMode(PowerFlow);")
+                self.client.run_script_command(solve_command)
+                attempts.append(QueryAttempt("PowerFlow", "candidate_postctg_solve", row_count=1, raw_summary=f"command={solve_command}"))
+            except Exception as exc:
+                attempts.append(QueryAttempt("PowerFlow", "candidate_postctg_solve", row_count=0, raw_summary=f"command={solve_command}", error=str(exc)))
+                return attempts, selected_loading
+            selected_loading, read_attempt = self.read_branch_loading_with_diagnostics(selected_branch)
+            attempts.append(read_attempt)
+            return attempts, selected_loading
+        finally:
+            self.reload_case(post_contingency_case_path)
 
     def probe_add_candidate_branch(
         self,
@@ -439,6 +501,48 @@ class PowerWorldReader:
             raw_summary=raw_summary,
         )
         return [_branch_from_row(row, fields) for row in rows], attempt
+
+    def read_branch_loading_with_diagnostics(self, branch: Branch) -> tuple[ThermalViolation | None, QueryAttempt]:
+        object_type = self.schema.object_type("branch")
+        try:
+            available = self.client.get_field_list(object_type)
+            fields = self.schema.resolve_required("branch", ["from_bus", "to_bus", "circuit", "mva"], available)
+            fields.update(self.schema.resolve_optional("branch", ["rate_a", "percent_loading", "nominal_kv"], available))
+            field_values = list(fields.values())
+            response = self._get_rows_response(object_type, field_values)
+            rows = records_from_response(field_values, response.payload)
+            raw_summary = _summarize(response.raw)
+        except Exception as exc:
+            return None, QueryAttempt(object_type, "selected_branch_live_loading", error=str(exc))
+
+        conversion_errors: list[str] = []
+        for row in rows:
+            try:
+                if _row_matches_branch(row, fields, branch):
+                    loading = _thermal_violation_from_branch_row(row, fields, branch)
+                    return loading, QueryAttempt(
+                        object_type,
+                        "selected_branch_live_loading",
+                        field_count=len(field_values),
+                        row_count=1,
+                        fields=tuple(field_values),
+                        raw_summary=raw_summary,
+                    )
+            except Exception as exc:
+                conversion_errors.append(str(exc))
+                continue
+        error = f"Selected branch {branch.from_bus}-{branch.to_bus}-{branch.circuit_id} was not found in live Branch table."
+        if conversion_errors:
+            error = f"Selected branch was found but live loading conversion failed: {'; '.join(conversion_errors[:3])}"
+        return None, QueryAttempt(
+            object_type,
+            "selected_branch_live_loading",
+            field_count=len(field_values),
+            row_count=0,
+            fields=tuple(field_values),
+            raw_summary=raw_summary,
+            error=error,
+        )
 
     def read_contingencies(self) -> list[Contingency]:
         contingencies, attempts = self.read_contingencies_with_diagnostics()
@@ -734,6 +838,33 @@ def _thermal_violation_from_row(row: dict[str, Any], fields: dict[str, str]) -> 
         percent_loading=_optional_float(row.get(fields["percent"])) or 0.0,
         contingency=str(row.get(fields["contingency"], "")).strip(),
         category=str(row.get(fields["category"], "")).strip() if "category" in fields else "",
+    )
+
+
+def _row_matches_branch(row: dict[str, Any], fields: dict[str, str], branch: Branch) -> bool:
+    left = _to_int(row[fields["from_bus"]])
+    right = _to_int(row[fields["to_bus"]])
+    circuit = str(row.get(fields["circuit"], "")).strip()
+    return tuple(sorted((left, right))) == branch.pair and circuit.lower() == branch.circuit_id.strip().lower()
+
+
+def _thermal_violation_from_branch_row(row: dict[str, Any], fields: dict[str, str], branch: Branch) -> ThermalViolation:
+    mva = abs(_to_float(row[fields["mva"]]))
+    rating = _to_float(row[fields["rate_a"]]) if "rate_a" in fields else 0.0
+    if "percent_loading" in fields:
+        percent = abs(_optional_float(row[fields["percent_loading"]]) or 0.0)
+    elif rating > 0:
+        percent = abs(mva / rating * 100.0)
+    else:
+        percent = 0.0
+    return ThermalViolation(
+        branch_key=f"{branch.from_bus}-{branch.to_bus}-{branch.circuit_id}",
+        from_bus=branch.from_bus,
+        to_bus=branch.to_bus,
+        circuit_id=branch.circuit_id,
+        mva=mva,
+        rating_mva=rating,
+        percent_loading=percent,
     )
 
 
