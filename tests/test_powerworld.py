@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from contingency_solver.core import CandidateLine, ConductorModel, calculate_line_parameters
+from contingency_solver.core import Branch, CandidateLine, ConductorModel, calculate_line_parameters
 from contingency_solver.powerworld import (
     PowerWorldReader,
     PowerWorldSchema,
@@ -18,15 +18,16 @@ class FakeClient:
     def __init__(self) -> None:
         self.commands: list[str] = []
         self.opened_cases: list[str] = []
+        self.saved_cases: list[str] = []
         self.available = {
             "Bus": {"BusNum", "BusName", "BusNomVolt", "Latitude", "Longitude", "Status"},
-            "Branch": {"BusNum", "BusNum:1", "LineCircuit", "Status"},
+            "Branch": {"BusNum", "BusNum:1", "LineCircuit", "Status", "MVA", "LineLimMVA", "Percent"},
             "Contingency": {"CTGLabel", "Category", "Skip", "Solved", "NumActions"},
             "ViolationCTG": {"CTGLabel", "LimViolID", "LimViolLimit", "LimViolValue", "LimViolPct", "LimViolCalc"},
         }
         self.rows = {
             "Bus": [{"BusNum": "101", "BusName": "A", "BusNomVolt": "115", "Latitude": "40", "Longitude": "-82", "Status": "Closed"}],
-            "Branch": [{"BusNum": "101", "BusNum:1": "102", "LineCircuit": "1", "Status": "Closed"}],
+            "Branch": [{"BusNum": "101", "BusNum:1": "102", "LineCircuit": "1", "Status": "Closed", "MVA": "125", "LineLimMVA": "100", "Percent": "125"}],
             "Contingency": [{"CTGLabel": "CTG_A", "Category": "Thermal", "Skip": "No", "Solved": "Yes", "NumActions": "1"}],
             "ViolationCTG": [
                 {
@@ -61,6 +62,9 @@ class FakeClient:
     def open_case(self, path: Path) -> None:
         self.opened_cases.append(str(path))
 
+    def save_case(self, path: Path, file_type: str = "PWB", overwrite: bool = True) -> None:
+        self.saved_cases.append(str(path))
+
 
 def schema() -> PowerWorldSchema:
     return PowerWorldSchema(
@@ -89,6 +93,9 @@ def schema() -> PowerWorldSchema:
                         "circuit": ["LineCircuit"],
                         "status": ["Status"],
                         "nominal_kv": ["NomkV"],
+                        "mva": ["MVA"],
+                        "rate_a": ["LineLimMVA"],
+                        "percent_loading": ["Percent"],
                     },
                 },
                 "contingency": {
@@ -215,3 +222,26 @@ def test_probe_add_solve_and_run_contingency_reads_violations_and_reloads(tmp_pa
     assert len(violations) == 1
     assert any(attempt.filter_name == "selected_contingency_probe" for attempt in attempts)
     assert fake.opened_cases == [str(tmp_path / "working.pwb")]
+
+
+def test_create_post_contingency_base_solves_contingency_and_saves(tmp_path: Path) -> None:
+    fake = FakeClient()
+    reader = PowerWorldReader(fake, schema())  # type: ignore[arg-type]
+
+    attempts = reader.create_post_contingency_base(tmp_path / "working.pwb", tmp_path / "postctg.pwb", "CTG_A")
+
+    assert not [attempt.error for attempt in attempts if attempt.error]
+    assert fake.opened_cases == [str(tmp_path / "working.pwb")]
+    assert 'CTGSolve("CTG_A")' in fake.commands
+    assert fake.saved_cases == [str(tmp_path / "postctg.pwb")]
+
+
+def test_read_branch_loading_with_diagnostics() -> None:
+    reader = PowerWorldReader(FakeClient(), schema())  # type: ignore[arg-type]
+
+    loading, attempt = reader.read_branch_loading_with_diagnostics(Branch(101, 102, "1", 115.0))
+
+    assert attempt.error == ""
+    assert loading is not None
+    assert loading.percent_loading == 125.0
+    assert loading.mva == 125.0
