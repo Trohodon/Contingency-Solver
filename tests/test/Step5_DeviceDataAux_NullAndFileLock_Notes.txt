@@ -1,0 +1,109 @@
+Step 5 - DeviceData AUX null/file-lock fix
+
+Date: 2026-09-14
+
+Files changed:
+- Modules/RawWriter.txt
+
+Problem reported:
+- With Add to Queue and PowerWorld contingency files selected, Access raises:
+  Run-time error '94': Invalid use of Null
+- The main PowerWorld AUX can finish, but the contingency/device-data output stops.
+- The generated *_DeviceData.aux file is incomplete.
+- Windows says *_DeviceData.aux cannot be deleted because it is open in Microsoft Access.
+- Running Build Files a second time with the project still queued may complete successfully.
+
+
+What this error means:
+- Error 94 happens when VBA tries to use Null as a normal string, number, or Boolean.
+- The device-data writer was doing string and number operations directly against fields that can be Null in queued/project output.
+- Because the error happened after the file was opened but before Close #File, Access kept the file handle open.
+
+
+Previous code in RawWriter.WritePwConFile device-data output:
+
+    frFirst = Left(DeviceData.Fields("fromnum"), 1)
+    toFirst = Left(DeviceData.Fields("tonum"), 1)
+
+    If DeviceData.Fields("bus1") < 9999 Then
+        busFr = DeviceData.Fields("bus1") + busOffset
+    Else
+        busFr = DeviceData.Fields("bus1")
+    End If
+
+    branchString = branchString & """" & DeviceData.Fields("nostat") & """ """
+
+What this did:
+- If fromnum or tonum was Null, Left(...) raised error 94.
+- If bus1, bus2, from_bus, or to_bus was Null, the numeric comparison could raise error 94.
+- If any printed text field was Null, string concatenation could also raise error 94.
+
+
+New code in RawWriter.WritePwConFile device-data output:
+
+    fromNum = Nz(DeviceData.Fields("fromnum").Value, "")
+    toNum = Nz(DeviceData.Fields("tonum").Value, "")
+
+    frFirst = Left(fromNum, 1)
+    toFirst = Left(toNum, 1)
+
+    If Nz(DeviceData.Fields("bus1").Value, 0) < 9999 Then
+        busFr = Nz(DeviceData.Fields("bus1").Value, 0) + busOffset
+    Else
+        busFr = Nz(DeviceData.Fields("bus1").Value, 0)
+    End If
+
+What this does:
+- Converts nullable text fields to blank strings before string handling.
+- Converts nullable bus-number fields to 0 before numeric comparison.
+- Skips device-data rows with missing start_date or end_date instead of evaluating Null date comparisons.
+- Keeps writing the remaining rows instead of stopping on a nullable field.
+
+
+Previous file cleanup behavior:
+- WritePwConFile had no local error handler around the three files it opens.
+- If an error happened while writing *_DeviceData.aux, the file could stay open in Access.
+
+
+New file cleanup behavior:
+- WritePwConFile now has a local error handler.
+- It tracks whether the breaker-failure/comb/device-data output file is open.
+- On error it closes:
+  - DeviceData recordset
+  - filteredBranch recordset
+  - Line recordset
+  - Contingencies recordset
+  - Snapshots recordset
+  - the open output file handle
+- Then it re-raises the original error so Access still shows the failure instead of hiding it.
+
+
+What was kept:
+- Same output file names.
+- Same device-data output format.
+- Same branch and transformer device-data sections.
+- Same bus-offset behavior when a bus number exists.
+- Same contingency validation calls after the files are written.
+- No changes were made to queue/project selection rules.
+
+
+What changed:
+- Nullable device-data fields no longer stop the file mid-write.
+- If another unexpected error occurs, Access should no longer keep *_DeviceData.aux locked after the error.
+
+
+KML note:
+- The Add to Queue path does store chkSolarKMLoutputQ and the queued build loop checks it.
+- This pass did not change KML code.
+- Retest KML after the contingency/device-data error is gone, because the runtime error may have interrupted later/related output behavior.
+
+
+Test notes:
+1. Run Debug > Compile in Access.
+2. Queue the same project and select PowerWorld contingency files.
+3. Click Build Files.
+4. Confirm *_DeviceData.aux completes past the previous 14-line stopping point.
+5. After the build, try deleting *_DeviceData.aux without closing Access.
+   - Expected: Windows should allow deletion because Access should not still hold the file open.
+6. If error 94 still appears, click Debug and capture the highlighted line.
+7. After this is clean, retest Solar KML output with Add to Queue selected.

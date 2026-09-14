@@ -1,0 +1,182 @@
+Step 4 - Runtime 3021 guard for queued/project builds
+
+Date: 2026-09-10
+
+Files changed:
+- Modules/ModelWriter.txt
+- Modules/AuxWriter.txt
+- Modules/RawWriter.txt
+
+Problem reported:
+- When a project is queued and Build Files is selected, Access raises:
+  Run-time error '3021': No current record
+- The main PowerWorld AUX appears to finish, but the contingency files do not get made.
+
+What error 3021 means:
+- Access/VBA tried to read or move within a recordset when there was no current row.
+- The common cause is calling MoveLast, MoveFirst, or reading Fields(...) after a query/table returned no rows.
+- For queued/project-subset builds, it is normal for some project link tables or device-data tables to have no matching rows.
+
+
+Previous code in project-array setup:
+
+    projectsTable.MoveLast
+    projectsTable.MoveFirst
+    While Not projectsTable.EOF
+        ...
+    Wend
+
+What this did:
+- The code assumed every project link table had at least one record.
+- If ProjectsBuses, ProjectsBranches, ProjectsMachines, ProjectsSwitchedShunts, or ProjectsTwoWindings was empty, MoveLast could raise 3021.
+- This helper exists in both ModelWriter and AuxWriter, so both were updated.
+
+
+New code in project-array setup:
+
+    If Not (projectsTable.BOF And projectsTable.EOF) Then
+        projectsTable.MoveLast
+        projectsTable.MoveFirst
+    End If
+
+    While Not projectsTable.EOF
+        ...
+    Wend
+
+What this does:
+- Checks whether the recordset is empty before moving.
+- If the table has no records, the loop is skipped.
+- The project arrays still exist with their original blank first value, so the later code can continue safely.
+
+
+Previous code in RawWriter contingency device-data output:
+
+    Set DeviceData = db.OpenRecordset("DeviceData", dbOpenDynaset, dbSeeChanges)
+    DeviceData.MoveLast
+    DeviceData.MoveFirst
+
+    ...
+
+    Set DeviceData = db.OpenRecordset("TFMR_DeviceData", dbOpenDynaset, dbSeeChanges)
+    DeviceData.MoveLast
+    DeviceData.MoveFirst
+
+What this did:
+- The contingency writer assumed DeviceData and TFMR_DeviceData always had at least one record.
+- A queued/project build can leave one of those tables empty after UpdateDeviceData.
+- If either table was empty, the contingency writer could stop before finishing the contingency/device-data outputs.
+
+
+New code in RawWriter contingency device-data output:
+
+    Set DeviceData = db.OpenRecordset("DeviceData", dbOpenDynaset, dbSeeChanges)
+    If Not (DeviceData.BOF And DeviceData.EOF) Then
+        DeviceData.MoveLast
+        DeviceData.MoveFirst
+    End If
+
+    ...
+
+    Set DeviceData = db.OpenRecordset("TFMR_DeviceData", dbOpenDynaset, dbSeeChanges)
+    If Not (DeviceData.BOF And DeviceData.EOF) Then
+        DeviceData.MoveLast
+        DeviceData.MoveFirst
+    End If
+
+What this does:
+- Leaves the file header/footer output alone.
+- If there is no branch or transformer device data, it simply writes no device-data rows for that section.
+- This avoids stopping the contingency writer just because an optional device-data recordset is empty.
+
+
+What was kept:
+- No output formats were changed.
+- No queue inclusion rules were changed.
+- No project date rules were changed.
+- No contingency naming logic was changed.
+- No Step 3 speed optimization logic was changed.
+
+
+What was removed:
+- The assumption that project link tables must always contain at least one row.
+- The assumption that DeviceData and TFMR_DeviceData must always contain at least one row.
+
+
+Test notes:
+1. Run Debug > Compile in Access.
+2. Queue the same project/build setup that produced error 3021.
+3. Select Build Files again.
+4. Confirm the main PowerWorld AUX still finishes.
+5. Confirm these contingency outputs are created when selected:
+   - *_NONcomb_BF.aux
+   - *_Comb.aux
+   - *_DeviceData.aux
+   - *_NONcomb_CSB2B.aux if common-structure contingencies are enabled/available
+6. If 3021 still appears, click Debug and capture the highlighted module name and line number.
+
+
+Follow-up 3021 location:
+- Debug highlighted DeviceDataUpdater line 35.
+- Line 35 is where RefreshDeviceDataTables re-raises the real error after rolling back the transaction.
+- The likely source was inside CopyBranchDeviceData or CopyTransformerDeviceData.
+
+
+Additional previous code in DeviceDataUpdater:
+
+    Set targetRows = db.OpenRecordset("DeviceData", dbOpenDynaset, dbSeeChanges)
+
+    Do While Not sourceRows.EOF
+        branchId = sourceRows.Fields("branch_id").Value
+        targetRows.FindFirst "branch_id = " & branchId
+
+        If targetRows.NoMatch Then
+            targetRows.AddNew
+            ...
+        Else
+            targetRows.Edit
+            ...
+        End If
+    Loop
+
+Same pattern existed for TFMR_DeviceData:
+
+    Set targetRows = db.OpenRecordset("TFMR_DeviceData", dbOpenDynaset, dbSeeChanges)
+    targetRows.FindFirst "two_winding_id = " & twoWindingId
+
+What this did:
+- RefreshDeviceDataTables deletes DeviceData and TFMR_DeviceData before rebuilding them.
+- Immediately after the delete, the target recordset can be empty.
+- The code still tried to run FindFirst/NoMatch logic against that empty target recordset.
+- In Access this can produce "No current record" depending on the recordset state.
+
+
+Additional new code in DeviceDataUpdater:
+
+    Set targetRows = db.OpenRecordset("DeviceData", dbOpenDynaset, dbSeeChanges)
+    targetHasRows = Not (targetRows.BOF And targetRows.EOF)
+
+    Do While Not sourceRows.EOF
+        branchId = sourceRows.Fields("branch_id").Value
+        If targetHasRows Then
+            targetRows.FindFirst "branch_id = " & branchId
+        End If
+
+        If Not targetHasRows Or targetRows.NoMatch Then
+            targetRows.AddNew
+            ...
+            targetRows.Update
+            targetHasRows = True
+        Else
+            targetRows.Edit
+            ...
+        End If
+    Loop
+
+Same change was made for TFMR_DeviceData.
+
+What this does:
+- If the target table is empty, the first source row is inserted directly.
+- After the first insert, duplicate detection turns back on through FindFirst.
+- The original duplicate behavior is preserved:
+  - first row creates the full destination row
+  - later duplicate branch_id/two_winding_id rows update fromnum/tonum only when nonblank
