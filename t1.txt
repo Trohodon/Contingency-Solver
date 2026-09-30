@@ -1,0 +1,106 @@
+Option Compare Database
+Option Explicit
+
+Private Const BUILD_TIMING_ENABLED As Boolean = False
+
+Private mEnabled As Boolean
+Private mLogPath As String
+Private mStartTick As Single
+Private mLastTick As Single
+
+Public Sub StartTiming(ByVal caseFilePath As String)
+    On Error GoTo ErrHandler
+
+    If Not BUILD_TIMING_ENABLED Then
+        mEnabled = False
+        Exit Sub
+    End If
+
+    mEnabled = True
+    mLogPath = caseFilePath & "_BuildTiming.txt"
+    mStartTick = Timer
+    mLastTick = mStartTick
+
+    If Dir$(mLogPath) <> "" Then
+        Kill mLogPath
+    End If
+
+    WriteLine "Model build timing"
+    WriteLine "Started: " & Format(Now(), "yyyy-mm-dd hh:nn:ss")
+    WriteLine "Case path: " & caseFilePath
+    WriteLine ""
+    Exit Sub
+
+ErrHandler:
+    mEnabled = False
+End Sub
+
+Public Sub MarkElapsed(ByVal stepName As String)
+    On Error GoTo ErrHandler
+
+    If Not mEnabled Then
+        Exit Sub
+    End If
+
+    Dim currentTick As Single
+    currentTick = Timer
+
+    WriteLine stepName & ": " & FormatSeconds(SecondsBetween(mLastTick, currentTick)) & _
+        " (total " & FormatSeconds(SecondsBetween(mStartTick, currentTick)) & ")"
+    mLastTick = currentTick
+    Exit Sub
+
+ErrHandler:
+    mEnabled = False
+End Sub
+
+Public Sub FinishTiming()
+    On Error GoTo ErrHandler
+
+    If Not mEnabled Then
+        Exit Sub
+    End If
+
+    Dim currentTick As Single
+    currentTick = Timer
+
+    WriteLine ""
+    WriteLine "Total build time: " & FormatSeconds(SecondsBetween(mStartTick, currentTick))
+    WriteLine "Finished: " & Format(Now(), "yyyy-mm-dd hh:nn:ss")
+    mEnabled = False
+    Exit Sub
+
+ErrHandler:
+    mEnabled = False
+End Sub
+
+Private Function SecondsBetween(ByVal startTick As Single, ByVal endTick As Single) As Double
+    If endTick >= startTick Then
+        SecondsBetween = endTick - startTick
+    Else
+        SecondsBetween = (86400# - startTick) + endTick
+    End If
+End Function
+
+Private Function FormatSeconds(ByVal totalSeconds As Double) As String
+    Dim minutes As Long
+    Dim seconds As Double
+
+    minutes = Int(totalSeconds / 60#)
+    seconds = totalSeconds - (minutes * 60#)
+
+    If minutes > 0 Then
+        FormatSeconds = minutes & " min " & Format(seconds, "0.0") & " sec"
+    Else
+        FormatSeconds = Format(seconds, "0.0") & " sec"
+    End If
+End Function
+
+Private Sub WriteLine(ByVal text As String)
+    Dim fileNumber As Integer
+
+    fileNumber = FreeFile
+    Open mLogPath For Append As #fileNumber
+    Print #fileNumber, text
+    Close #fileNumber
+End Sub
